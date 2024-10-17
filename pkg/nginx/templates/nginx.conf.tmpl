@@ -1,0 +1,14 @@
+{{- range $i, $port := .Ports }}
+upstream {{ $.Namespace }}_{{ $.Service }}_{{ $port }} {
+    {{- range $.Endpoints }}
+    server {{ . }}:{{ $port }};
+    {{- end }}
+}
+
+server {
+    listen {{ $.IP }}:{{ $port }};
+    location / {
+        proxy_pass http://{{ $.Namespace }}_{{ $.Service }}_{{ $port }};
+    }
+}
+{{ end }}
