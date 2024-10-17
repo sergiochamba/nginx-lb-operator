@@ -7,8 +7,8 @@ import (
 
     corev1 "k8s.io/api/core/v1"
     "k8s.io/apimachinery/pkg/api/errors"
-    "k8s.io/apimachinery/pkg/types"
     "k8s.io/apimachinery/pkg/runtime"
+    "k8s.io/apimachinery/pkg/types"
     ctrl "sigs.k8s.io/controller-runtime"
     "sigs.k8s.io/controller-runtime/pkg/client"
     "sigs.k8s.io/controller-runtime/pkg/log"
@@ -44,7 +44,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
     if err != nil {
         if errors.IsNotFound(err) {
             // Service not found, handle deletion
-            err = r.handleServiceDeletion(ctx, req.NamespacedName)
+            err = r.handleServiceDeletion(ctx, req.NamespacedName.Namespace, req.NamespacedName.Name)
             if err != nil {
                 logger.Error(err, "Failed to handle service deletion")
                 return ctrl.Result{}, err
@@ -73,7 +73,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
     if !svc.ObjectMeta.DeletionTimestamp.IsZero() {
         if containsString(svc.ObjectMeta.Finalizers, finalizerName) {
             // Our finalizer is present, so handle cleanup
-            if err := r.handleServiceDeletion(ctx, svc); err != nil {
+            if err := r.handleServiceDeletion(ctx, svc.Namespace, svc.Name); err != nil {
                 logger.Error(err, "Failed to handle service deletion")
                 return ctrl.Result{}, err
             }
@@ -112,6 +112,8 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
     ipAssigned := false
     configApplied := false
 
+    var allocation *ipam.Allocation
+
     defer func() {
         if !configApplied {
             // Rollback actions
@@ -131,7 +133,8 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
     }()
 
     // Allocate IP and ports
-    allocation, err := ipam.AllocateIPAndPorts(svc.Namespace, svc.Name, ports)
+    var err error
+    allocation, err = ipam.AllocateIPAndPorts(svc.Namespace, svc.Name, ports)
     if err != nil {
         logger.Error(err, "IP allocation failed")
         return err
@@ -194,26 +197,26 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
     return nil
 }
 
-func (r *ServiceReconciler) handleServiceDeletion(ctx context.Context, svc *corev1.Service) error {
+func (r *ServiceReconciler) handleServiceDeletion(ctx context.Context, namespace, name string) error {
     logger := log.FromContext(ctx)
 
-    logger.Info("Handling service deletion", "service", svc.Name, "namespace", svc.Namespace)
+    logger.Info("Handling service deletion", "service", name, "namespace", namespace)
 
     // Remove NGINX configuration
-    err := nginx.RemoveServiceConfiguration(svc.Namespace, svc.Name)
+    err := nginx.RemoveServiceConfiguration(namespace, name)
     if err != nil {
         logger.Error(err, "Failed to remove NGINX configuration")
         return err
     }
 
     // Release IP and ports
-    err = ipam.ReleaseAllocation(svc.Namespace, svc.Name)
+    err = ipam.ReleaseAllocation(namespace, name)
     if err != nil {
         logger.Error(err, "Failed to release IP allocation")
         return err
     }
 
-    logger.Info("Successfully handled service deletion", "service", svc.Name)
+    logger.Info("Successfully handled service deletion", "service", name)
     return nil
 }
 

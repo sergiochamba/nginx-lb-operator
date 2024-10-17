@@ -11,6 +11,8 @@ import (
     "sigs.k8s.io/controller-runtime/pkg/log/zap"
 
     "github.com/sergiochamba/nginx-lb-operator/controllers"
+    "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
+    "github.com/sergiochamba/nginx-lb-operator/pkg/nginx"
     // +kubebuilder:scaffold:imports
 )
 
@@ -43,6 +45,18 @@ func main() {
     })
     if err != nil {
         setupLog.Error(err, "unable to start manager")
+        os.Exit(1)
+    }
+
+    // Initialize IPAM module
+    if err := ipam.Init(mgr.GetClient()); err != nil {
+        setupLog.Error(err, "unable to initialize IPAM module")
+        os.Exit(1)
+    }
+
+    // Initialize NGINX module
+    if err := nginx.Init(mgr.GetClient()); err != nil {
+        setupLog.Error(err, "unable to initialize NGINX module")
         os.Exit(1)
     }
 

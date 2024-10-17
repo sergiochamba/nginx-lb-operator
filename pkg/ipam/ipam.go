@@ -5,9 +5,11 @@ import (
     "encoding/json"
     "errors"
     "fmt"
+    "strings"
     "sync"
 
     corev1 "k8s.io/api/core/v1"
+    "k8s.io/apimachinery/pkg/api/errors"
     "k8s.io/apimachinery/pkg/types"
     "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -28,9 +30,9 @@ var (
 )
 
 const (
-    ipPoolConfigMapName      = "ip-pool-config"
+    ipPoolConfigMapName       = "ip-pool-config"
     ipAllocationsConfigMapName = "ip-allocations"
-    configMapNamespace       = "nginx-lb-operator-system"
+    configMapNamespace        = "nginx-lb-operator-system"
 )
 
 func Init(client client.Client) error {
@@ -69,11 +71,7 @@ func loadIPPool() error {
         return errors.New("ip_pool not found in ConfigMap")
     }
 
-    ipPool = []string{}
-    for _, ip := range parseIPPool(ipPoolData) {
-        ipPool = append(ipPool, ip)
-    }
-
+    ipPool = parseIPPool(ipPoolData)
     return nil
 }
 
@@ -90,7 +88,7 @@ func loadAllocations() error {
     }
 
     data, exists := cm.Data["allocations"]
-    if !exists {
+    if !exists || data == "" {
         return nil
     }
 
@@ -177,7 +175,7 @@ func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, 
 
         conflict := false
         for _, port := range ports {
-            if svc, inUse := portUsage[port]; inUse {
+            if _, inUse := portUsage[port]; inUse {
                 conflict = true
                 break
             }
