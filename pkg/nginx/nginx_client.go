@@ -13,7 +13,7 @@ import (
     "golang.org/x/crypto/ssh"
     "os"
 
-    "github.com/yourusername/nginx-lb-operator/pkg/ipam"
+    "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
 )
 
 var (
