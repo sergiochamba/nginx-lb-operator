@@ -13,8 +13,8 @@ import (
     "sigs.k8s.io/controller-runtime/pkg/client"
     "sigs.k8s.io/controller-runtime/pkg/log"
 
-    "github.com/yourusername/nginx-lb-operator/pkg/ipam"
-    "github.com/yourusername/nginx-lb-operator/pkg/nginx"
+    "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
+    "github.com/sergiochamba/nginx-lb-operator/pkg/nginx"
 )
 
 type ServiceReconciler struct {
