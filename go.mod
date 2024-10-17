@@ -1,4 +1,4 @@
-module github.com/sergiochamba/nginx-lb-operator
+module github.com/yourusername/nginx-lb-operator
 
 go 1.17
 

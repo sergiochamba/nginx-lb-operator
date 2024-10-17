@@ -4,18 +4,21 @@ This operator watches for Kubernetes Services of type `LoadBalancer` and configu
 
 ## **Features**
 
-- Assigns IPs from a predefined IP pool to services.
-- Configures NGINX with the service endpoints.
+- Assigns IPs from a predefined IP pool to services after successful configuration.
+- Configures NGINX to route traffic to the service endpoints.
 - Adds assigned IPs to the NGINX server's network interface.
 - Allows sharing of IPs across services using different ports.
-- Updates configurations when services or endpoints change.
+- Updates configurations when services, endpoints, or nodes change.
 - Cleans up configurations when services are deleted.
+- Implements persistent IP allocations using ConfigMaps.
 
 ## **Prerequisites**
 
 - Kubernetes cluster
 - Operator SDK installed
 - Access to an NGINX server with SSH
+- SSH key-based authentication configured
+- NGINX server's SSH public key added to known hosts
 
 ## **Setup**
 

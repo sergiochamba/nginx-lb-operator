@@ -9,6 +9,8 @@ COPY pkg/ pkg/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager main.go
 
 FROM alpine:latest
-WORKDIR /
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
 COPY --from=builder /workspace/manager .
-ENTRYPOINT ["/manager"]
+COPY pkg/nginx/templates/ templates/
+ENTRYPOINT ["/app/manager"]

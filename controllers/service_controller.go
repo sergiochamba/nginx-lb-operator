@@ -17,6 +17,10 @@ import (
     "github.com/sergiochamba/nginx-lb-operator/pkg/nginx"
 )
 
+const (
+    finalizerName = "nginx-lb-operator.finalizers.yourdomain.com"
+)
+
 type ServiceReconciler struct {
     client.Client
     Scheme *runtime.Scheme
@@ -26,6 +30,7 @@ type ServiceReconciler struct {
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
     return ctrl.NewControllerManagedBy(mgr).
         For(&corev1.Service{}).
+        Owns(&corev1.Endpoints{}).
         Complete(r)
 }
 
@@ -55,13 +60,29 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
         return ctrl.Result{}, nil
     }
 
-    // Check if the service is being deleted
-    if !svc.ObjectMeta.DeletionTimestamp.IsZero() {
-        // Handle deletion
-        err = r.handleServiceDeletion(ctx, req.NamespacedName)
-        if err != nil {
-            logger.Error(err, "Failed to handle service deletion")
+    // Add finalizer if not present and service is not being deleted
+    if svc.ObjectMeta.DeletionTimestamp.IsZero() && !containsString(svc.ObjectMeta.Finalizers, finalizerName) {
+        svc.ObjectMeta.Finalizers = append(svc.ObjectMeta.Finalizers, finalizerName)
+        if err := r.Update(ctx, svc); err != nil {
+            logger.Error(err, "Failed to add finalizer")
             return ctrl.Result{}, err
+        }
+    }
+
+    // Handle deletion
+    if !svc.ObjectMeta.DeletionTimestamp.IsZero() {
+        if containsString(svc.ObjectMeta.Finalizers, finalizerName) {
+            // Our finalizer is present, so handle cleanup
+            if err := r.handleServiceDeletion(ctx, svc); err != nil {
+                logger.Error(err, "Failed to handle service deletion")
+                return ctrl.Result{}, err
+            }
+            // Remove finalizer and update
+            svc.ObjectMeta.Finalizers = removeString(svc.ObjectMeta.Finalizers, finalizerName)
+            if err := r.Update(ctx, svc); err != nil {
+                logger.Error(err, "Failed to remove finalizer")
+                return ctrl.Result{}, err
+            }
         }
         return ctrl.Result{}, nil
     }
@@ -86,19 +107,52 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
         ports = append(ports, port.Port)
     }
 
+    // Begin transaction-like behavior
+    allocated := false
+    ipAssigned := false
+    configApplied := false
+
+    defer func() {
+        if !configApplied {
+            // Rollback actions
+            if ipAssigned {
+                // Remove IP from NGINX server
+                if err := nginx.RemoveIPFromNginxServer(allocation.IP); err != nil {
+                    logger.Error(err, "Failed to remove IP from NGINX server during rollback")
+                }
+            }
+            if allocated {
+                // Release IP allocation
+                if err := ipam.ReleaseAllocation(allocation.Namespace, allocation.Service); err != nil {
+                    logger.Error(err, "Failed to release IP allocation during rollback")
+                }
+            }
+        }
+    }()
+
     // Allocate IP and ports
     allocation, err := ipam.AllocateIPAndPorts(svc.Namespace, svc.Name, ports)
     if err != nil {
         logger.Error(err, "IP allocation failed")
         return err
     }
+    allocated = true
+    logger.Info("Allocated IP and ports", "IP", allocation.IP, "Ports", allocation.Ports)
+
+    // Assign IP to NGINX server
+    err = nginx.AssignIPToNginxServer(allocation.IP)
+    if err != nil {
+        logger.Error(err, "Failed to assign IP to NGINX server")
+        return err
+    }
+    ipAssigned = true
+    logger.Info("Assigned IP to NGINX server", "IP", allocation.IP)
 
     // Fetch endpoints
     endpoints := &corev1.Endpoints{}
     err = r.Get(ctx, types.NamespacedName{Namespace: svc.Namespace, Name: svc.Name}, endpoints)
     if err != nil {
         logger.Error(err, "Failed to get Endpoints")
-        ipam.ReleaseIPAndPorts(allocation)
         return err
     }
 
@@ -111,7 +165,6 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
     }
     if len(endpointIPs) == 0 {
         logger.Error(fmt.Errorf("no endpoints available"), "No endpoints for service")
-        ipam.ReleaseIPAndPorts(allocation)
         return fmt.Errorf("no endpoints available for service %s/%s", svc.Namespace, svc.Name)
     }
 
@@ -119,11 +172,13 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
     err = nginx.ConfigureService(allocation, ports, endpointIPs)
     if err != nil {
         logger.Error(err, "Failed to configure NGINX")
-        ipam.ReleaseIPAndPorts(allocation)
         return err
     }
+    configApplied = true
+    logger.Info("Configured NGINX for service", "service", svc.Name)
 
     // Validate configuration (e.g., health checks)
+    // TODO: Implement health checks if needed
 
     // Update service status
     svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{
@@ -134,28 +189,50 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
         logger.Error(err, "Failed to update Service status")
         return err
     }
+    logger.Info("Updated service status with LoadBalancer IP", "IP", allocation.IP)
 
-    logger.Info("Successfully reconciled service", "service", svc.Name)
     return nil
 }
 
-func (r *ServiceReconciler) handleServiceDeletion(ctx context.Context, namespacedName types.NamespacedName) error {
+func (r *ServiceReconciler) handleServiceDeletion(ctx context.Context, svc *corev1.Service) error {
     logger := log.FromContext(ctx)
 
-    // Release IP and ports
-    err := ipam.ReleaseAllocation(namespacedName.Namespace, namespacedName.Name)
-    if err != nil {
-        logger.Error(err, "Failed to release IP allocation")
-        return err
-    }
+    logger.Info("Handling service deletion", "service", svc.Name, "namespace", svc.Namespace)
 
     // Remove NGINX configuration
-    err = nginx.RemoveServiceConfiguration(namespacedName.Namespace, namespacedName.Name)
+    err := nginx.RemoveServiceConfiguration(svc.Namespace, svc.Name)
     if err != nil {
         logger.Error(err, "Failed to remove NGINX configuration")
         return err
     }
 
-    logger.Info("Successfully handled service deletion", "service", namespacedName.Name)
+    // Release IP and ports
+    err = ipam.ReleaseAllocation(svc.Namespace, svc.Name)
+    if err != nil {
+        logger.Error(err, "Failed to release IP allocation")
+        return err
+    }
+
+    logger.Info("Successfully handled service deletion", "service", svc.Name)
     return nil
+}
+
+// Helper functions
+func containsString(slice []string, s string) bool {
+    for _, item := range slice {
+        if item == s {
+            return true
+        }
+    }
+    return false
+}
+
+func removeString(slice []string, s string) []string {
+    result := []string{}
+    for _, item := range slice {
+        if item != s {
+            result = append(result, item)
+        }
+    }
+    return result
 }

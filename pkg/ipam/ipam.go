@@ -1,9 +1,15 @@
 package ipam
 
 import (
+    "context"
+    "encoding/json"
     "errors"
     "fmt"
     "sync"
+
+    corev1 "k8s.io/api/core/v1"
+    "k8s.io/apimachinery/pkg/types"
+    "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type Allocation struct {
@@ -14,18 +20,142 @@ type Allocation struct {
 }
 
 var (
-    ipPool = []string{
-        "10.1.1.55",
-        "10.1.1.56",
-        "10.1.1.57",
-    }
-
-    allocations      = make(map[string]*Allocation) // Key: namespace/service
-    ipPortUsage      = make(map[string]map[int32]string)
-    allocationMutex  sync.Mutex
+    allocationMutex sync.Mutex
+    ipPool          []string
+    allocations     map[string]*Allocation // Key: namespace/service
+    ipPortUsage     map[string]map[int32]string
+    k8sClient       client.Client
 )
 
-// AllocateIPAndPorts assigns an IP and ports to a service
+const (
+    ipPoolConfigMapName      = "ip-pool-config"
+    ipAllocationsConfigMapName = "ip-allocations"
+    configMapNamespace       = "nginx-lb-operator-system"
+)
+
+func Init(client client.Client) error {
+    allocationMutex.Lock()
+    defer allocationMutex.Unlock()
+
+    k8sClient = client
+    allocations = make(map[string]*Allocation)
+    ipPortUsage = make(map[string]map[int32]string)
+
+    // Load IP pool from ConfigMap
+    err := loadIPPool()
+    if err != nil {
+        return err
+    }
+
+    // Load allocations from ConfigMap
+    err = loadAllocations()
+    if err != nil {
+        return err
+    }
+
+    return nil
+}
+
+func loadIPPool() error {
+    ctx := context.Background()
+    cm := &corev1.ConfigMap{}
+    err := k8sClient.Get(ctx, types.NamespacedName{Name: ipPoolConfigMapName, Namespace: configMapNamespace}, cm)
+    if err != nil {
+        return err
+    }
+
+    ipPoolData, exists := cm.Data["ip_pool"]
+    if !exists {
+        return errors.New("ip_pool not found in ConfigMap")
+    }
+
+    ipPool = []string{}
+    for _, ip := range parseIPPool(ipPoolData) {
+        ipPool = append(ipPool, ip)
+    }
+
+    return nil
+}
+
+func loadAllocations() error {
+    ctx := context.Background()
+    cm := &corev1.ConfigMap{}
+    err := k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, cm)
+    if err != nil {
+        if errors.IsNotFound(err) {
+            // ConfigMap doesn't exist yet
+            return nil
+        }
+        return err
+    }
+
+    data, exists := cm.Data["allocations"]
+    if !exists {
+        return nil
+    }
+
+    var storedAllocations []*Allocation
+    err = json.Unmarshal([]byte(data), &storedAllocations)
+    if err != nil {
+        return err
+    }
+
+    for _, alloc := range storedAllocations {
+        key := fmt.Sprintf("%s/%s", alloc.Namespace, alloc.Service)
+        allocations[key] = alloc
+        if _, exists := ipPortUsage[alloc.IP]; !exists {
+            ipPortUsage[alloc.IP] = make(map[int32]string)
+        }
+        for _, port := range alloc.Ports {
+            ipPortUsage[alloc.IP][port] = key
+        }
+    }
+
+    return nil
+}
+
+func saveAllocations() error {
+    allocationMutex.Lock()
+    defer allocationMutex.Unlock()
+
+    ctx := context.Background()
+    cm := &corev1.ConfigMap{}
+    cm.Name = ipAllocationsConfigMapName
+    cm.Namespace = configMapNamespace
+
+    data, err := json.Marshal(allocationsToList())
+    if err != nil {
+        return err
+    }
+
+    cm.Data = map[string]string{
+        "allocations": string(data),
+    }
+
+    err = k8sClient.Update(ctx, cm)
+    if err != nil {
+        if errors.IsNotFound(err) {
+            // Create the ConfigMap
+            err = k8sClient.Create(ctx, cm)
+            if err != nil {
+                return err
+            }
+        } else {
+            return err
+        }
+    }
+
+    return nil
+}
+
+func allocationsToList() []*Allocation {
+    allocs := []*Allocation{}
+    for _, alloc := range allocations {
+        allocs = append(allocs, alloc)
+    }
+    return allocs
+}
+
 func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, error) {
     allocationMutex.Lock()
     defer allocationMutex.Unlock()
@@ -65,6 +195,13 @@ func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, 
                 Ports:     ports,
             }
             allocations[key] = allocation
+
+            // Save allocations to ConfigMap
+            err := saveAllocations()
+            if err != nil {
+                return nil, err
+            }
+
             return allocation, nil
         }
     }
@@ -72,7 +209,6 @@ func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, 
     return nil, errors.New("no available IPs with required ports")
 }
 
-// ReleaseAllocation frees the IP and ports for a service
 func ReleaseAllocation(namespace, service string) error {
     allocationMutex.Lock()
     defer allocationMutex.Unlock()
@@ -94,10 +230,23 @@ func ReleaseAllocation(namespace, service string) error {
     }
 
     delete(allocations, key)
+
+    // Save allocations to ConfigMap
+    err := saveAllocations()
+    if err != nil {
+        return err
+    }
+
     return nil
 }
 
-// ReleaseIPAndPorts is deprecated, use ReleaseAllocation instead
-func ReleaseIPAndPorts(allocation *Allocation) {
-    ReleaseAllocation(allocation.Namespace, allocation.Service)
+func parseIPPool(data string) []string {
+    ips := []string{}
+    for _, line := range strings.Split(data, "\n") {
+        ip := strings.TrimSpace(line)
+        if ip != "" {
+            ips = append(ips, ip)
+        }
+    }
+    return ips
 }

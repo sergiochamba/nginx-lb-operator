@@ -29,16 +29,11 @@ func main() {
     var metricsAddr string
     var enableLeaderElection bool
     flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-    flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+    flag.BoolVar(&enableLeaderElection, "leader-elect", true,
         "Enable leader election for controller manager.")
-
-    opts := zap.Options{
-        Development: true,
-    }
-    opts.BindFlags(flag.CommandLine)
     flag.Parse()
 
-    ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+    ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
     mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
         Scheme:             scheme,

@@ -2,30 +2,66 @@ package nginx
 
 import (
     "bytes"
+    "context"
     "fmt"
     "io/ioutil"
     "path/filepath"
     "strings"
     "text/template"
 
-    corev1 "k8s.io/api/core/v1"
-
-    "golang.org/x/crypto/ssh"
-    "os"
-
     "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
+    "golang.org/x/crypto/ssh"
+    "golang.org/x/crypto/ssh/knownhosts"
+    corev1 "k8s.io/api/core/v1"
+    "sigs.k8s.io/controller-runtime/pkg/client"
+    "os"
 )
 
 var (
-    nginxServerIP = os.Getenv("NGINX_SERVER_IP")
-    nginxUser     = os.Getenv("NGINX_USER")
-    nginxPassword = os.Getenv("NGINX_PASSWORD")
-    nginxConfigDir = "/etc/nginx/conf.d/"
+    nginxServerIP         string
+    nginxUser             string
+    nginxSSHPrivateKey    []byte
+    nginxKnownHosts       []byte
+    nginxConfigDir        = "/etc/nginx/conf.d/"
+    nginxNetworkInterface string
 )
+
+func Init(client client.Client) error {
+    // Load credentials from Kubernetes Secret
+    ctx := context.Background()
+    secret := &corev1.Secret{}
+    secretName := os.Getenv("NGINX_CREDENTIALS_SECRET")
+    if secretName == "" {
+        secretName = "nginx-server-credentials"
+    }
+    secretNamespace := os.Getenv("NGINX_CREDENTIALS_NAMESPACE")
+    if secretNamespace == "" {
+        secretNamespace = "nginx-lb-operator-system"
+    }
+
+    err := client.Get(ctx, client.ObjectKey{
+        Name:      secretName,
+        Namespace: secretNamespace,
+    }, secret)
+    if err != nil {
+        return err
+    }
+
+    nginxServerIP = string(secret.Data["NGINX_SERVER_IP"])
+    nginxUser = string(secret.Data["NGINX_USER"])
+    nginxSSHPrivateKey = secret.Data["NGINX_SSH_PRIVATE_KEY"]
+    nginxKnownHosts = secret.Data["NGINX_KNOWN_HOSTS"]
+    nginxNetworkInterface = os.Getenv("NGINX_NETWORK_INTERFACE")
+    if nginxNetworkInterface == "" {
+        nginxNetworkInterface = "eth0"
+    }
+
+    return nil
+}
 
 func ConfigureService(allocation *ipam.Allocation, ports []int32, endpointIPs []string) error {
     // Assign IP to NGINX interface
-    err := assignIPToNginxServer(allocation.IP)
+    err := AssignIPToNginxServer(allocation.IP)
     if err != nil {
         return err
     }
@@ -55,7 +91,7 @@ func RemoveServiceConfiguration(namespace, service string) error {
     // Remove configuration file
     filename := fmt.Sprintf("%s_%s.conf", namespace, service)
     remotePath := filepath.Join(nginxConfigDir, filename)
-    cmd := fmt.Sprintf("rm -f %s", remotePath)
+    cmd := fmt.Sprintf("sudo rm -f %s", remotePath)
     err := executeRemoteCommand(cmd)
     if err != nil {
         return err
@@ -70,24 +106,29 @@ func RemoveServiceConfiguration(namespace, service string) error {
     return nil
 }
 
-func assignIPToNginxServer(ip string) error {
-    cmd := fmt.Sprintf("sudo ip addr add %s/32 dev eth0 || true", ip)
+func AssignIPToNginxServer(ip string) error {
+    cmd := fmt.Sprintf("sudo ip addr add %s/32 dev %s || true", ip, nginxNetworkInterface)
+    return executeRemoteCommand(cmd)
+}
+
+func RemoveIPFromNginxServer(ip string) error {
+    cmd := fmt.Sprintf("sudo ip addr del %s/32 dev %s || true", ip, nginxNetworkInterface)
     return executeRemoteCommand(cmd)
 }
 
 func generateNginxConfig(allocation *ipam.Allocation, endpoints []string) (string, error) {
-    tmplPath := filepath.Join("pkg", "nginx", "templates", "nginx.conf.tmpl")
+    tmplPath := filepath.Join("/app", "templates", "nginx.conf.tmpl")
     tmpl, err := template.ParseFiles(tmplPath)
     if err != nil {
         return "", err
     }
 
     data := struct {
-        Namespace  string
-        Service    string
-        IP         string
-        Ports      []int32
-        Endpoints  []string
+        Namespace string
+        Service   string
+        IP        string
+        Ports     []int32
+        Endpoints []string
     }{
         Namespace: allocation.Namespace,
         Service:   allocation.Service,
@@ -123,7 +164,7 @@ func transferConfigFile(allocation *ipam.Allocation, configContent string) error
     defer session.Close()
 
     // Transfer file using 'cat'
-    cmd := fmt.Sprintf("cat > %s", remotePath)
+    cmd := fmt.Sprintf("sudo tee %s > /dev/null", remotePath)
     session.Stdin = strings.NewReader(configContent)
 
     err = session.Run(cmd)
@@ -166,12 +207,22 @@ func executeRemoteCommand(cmd string) error {
 }
 
 func newSSHClient() (*ssh.Client, error) {
+    signer, err := ssh.ParsePrivateKey(nginxSSHPrivateKey)
+    if err != nil {
+        return nil, err
+    }
+
+    hostKeyCallback, err := knownhosts.NewFromReader(bytes.NewReader(nginxKnownHosts))
+    if err != nil {
+        return nil, err
+    }
+
     sshConfig := &ssh.ClientConfig{
         User: nginxUser,
         Auth: []ssh.AuthMethod{
-            ssh.Password(nginxPassword),
+            ssh.PublicKeys(signer),
         },
-        HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+        HostKeyCallback: hostKeyCallback,
     }
 
     client, err := ssh.Dial("tcp", fmt.Sprintf("%s:22", nginxServerIP), sshConfig)
