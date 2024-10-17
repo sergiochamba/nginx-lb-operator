@@ -4,7 +4,6 @@ import (
     "bytes"
     "context"
     "fmt"
-    "io/ioutil"
     "path/filepath"
     "strings"
     "text/template"
@@ -14,6 +13,7 @@ import (
     "golang.org/x/crypto/ssh/knownhosts"
     corev1 "k8s.io/api/core/v1"
     "sigs.k8s.io/controller-runtime/pkg/client"
+    "k8s.io/apimachinery/pkg/types"
     "os"
 )
 
@@ -39,7 +39,7 @@ func Init(client client.Client) error {
         secretNamespace = "nginx-lb-operator-system"
     }
 
-    err := client.Get(ctx, client.ObjectKey{
+    err := client.Get(ctx, types.NamespacedName{
         Name:      secretName,
         Namespace: secretNamespace,
     }, secret)
@@ -212,7 +212,7 @@ func newSSHClient() (*ssh.Client, error) {
         return nil, err
     }
 
-    hostKeyCallback, err := knownhosts.NewFromReader(bytes.NewReader(nginxKnownHosts))
+    hostKeyCallback, err := knownhosts.New(string(nginxKnownHosts))
     if err != nil {
         return nil, err
     }

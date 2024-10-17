@@ -9,6 +9,7 @@ import (
     "sync"
 
     corev1 "k8s.io/api/core/v1"
+    apierrors "k8s.io/apimachinery/pkg/api/errors"
     "k8s.io/apimachinery/pkg/types"
     "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -79,7 +80,7 @@ func loadAllocations() error {
     cm := &corev1.ConfigMap{}
     err := k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, cm)
     if err != nil {
-        if errors.IsNotFound(err) {
+        if apierrors.IsNotFound(err) {
             // ConfigMap doesn't exist yet
             return nil
         }
@@ -131,7 +132,7 @@ func saveAllocations() error {
 
     err = k8sClient.Update(ctx, cm)
     if err != nil {
-        if errors.IsNotFound(err) {
+        if apierrors.IsNotFound(err) {
             // Create the ConfigMap
             err = k8sClient.Create(ctx, cm)
             if err != nil {

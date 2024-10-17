@@ -25,8 +25,7 @@ vet:
 docker-build:
 #    docker build -t ${IMAGE_NAME} .
 # Build Docker image with buildx (when using Apple Silicon)
-	DOCKER_CLI_EXPERIMENTAL=enabled docker buildx build --platform linux/amd64 -t ${IMAGE_NAME} .
-
+	DOCKER_CLI_EXPERIMENTAL=enabled docker buildx build --platform linux/amd64 --load -t ${IMAGE_NAME} .
 # Push Docker image
 docker-push:
 	docker push ${IMAGE_NAME}
