@@ -5,6 +5,7 @@ import (
     "encoding/json"
     "errors"
     "fmt"
+    "net"
     "strings"
     "sync"
 
@@ -30,9 +31,9 @@ var (
 )
 
 const (
-    ipPoolConfigMapName       = "ip-pool-config"
+    ipPoolConfigMapName        = "ip-pool-config"
     ipAllocationsConfigMapName = "ip-allocations"
-    configMapNamespace        = "nginx-lb-operator-system"
+    configMapNamespace         = "nginx-lb-operator-system"
 )
 
 func Init(client client.Client) error {
@@ -71,8 +72,71 @@ func loadIPPool() error {
         return errors.New("ip_pool not found in ConfigMap")
     }
 
-    ipPool = parseIPPool(ipPoolData)
+    ipPool, err = parseIPPool(ipPoolData)
+    if err != nil {
+        return err
+    }
+
     return nil
+}
+
+func parseIPPool(data string) ([]string, error) {
+    ips := []string{}
+    lines := strings.Split(data, "\n")
+    for _, line := range lines {
+        ipRange := strings.TrimSpace(line)
+        if ipRange == "" || strings.HasPrefix(ipRange, "#") {
+            continue
+        }
+        if strings.Contains(ipRange, "-") {
+            // It's a range
+            rangeIps, err := expandIPRange(ipRange)
+            if err != nil {
+                return nil, err
+            }
+            ips = append(ips, rangeIps...)
+        } else {
+            // It's a single IP
+            if net.ParseIP(ipRange) == nil {
+                return nil, fmt.Errorf("invalid IP address: %s", ipRange)
+            }
+            ips = append(ips, ipRange)
+        }
+    }
+    return ips, nil
+}
+
+func expandIPRange(ipRange string) ([]string, error) {
+    parts := strings.Split(ipRange, "-")
+    if len(parts) != 2 {
+        return nil, fmt.Errorf("invalid IP range format: %s", ipRange)
+    }
+    startIP := net.ParseIP(strings.TrimSpace(parts[0]))
+    endIP := net.ParseIP(strings.TrimSpace(parts[1]))
+    if startIP == nil || endIP == nil {
+        return nil, fmt.Errorf("invalid IP in range: %s", ipRange)
+    }
+    return generateIPRange(startIP, endIP)
+}
+
+func generateIPRange(startIP, endIP net.IP) ([]string, error) {
+    ips := []string{}
+    for ip := startIP; !ip.Equal(endIP); ip = nextIP(ip) {
+        ips = append(ips, ip.String())
+    }
+    ips = append(ips, endIP.String())
+    return ips, nil
+}
+
+func nextIP(ip net.IP) net.IP {
+    ip = ip.To4()
+    for j := len(ip) - 1; j >= 0; j-- {
+        ip[j]++
+        if ip[j] > 0 {
+            break
+        }
+    }
+    return ip
 }
 
 func loadAllocations() error {
@@ -238,13 +302,13 @@ func ReleaseAllocation(namespace, service string) error {
     return nil
 }
 
-func parseIPPool(data string) []string {
-    ips := []string{}
-    for _, line := range strings.Split(data, "\n") {
-        ip := strings.TrimSpace(line)
-        if ip != "" {
-            ips = append(ips, ip)
-        }
+func GetAllocatedIPs() (map[string]bool, error) {
+    allocationMutex.Lock()
+    defer allocationMutex.Unlock()
+
+    ips := make(map[string]bool)
+    for _, alloc := range allocations {
+        ips[alloc.IP] = true
     }
-    return ips
+    return ips, nil
 }

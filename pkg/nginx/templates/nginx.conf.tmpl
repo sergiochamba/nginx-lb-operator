@@ -1,14 +1,12 @@
-{{- range $i, $port := .Ports }}
-upstream {{ $.Namespace }}_{{ $.Service }}_{{ $port }} {
-    {{- range $.Endpoints }}
-    server {{ . }}:{{ $port }};
+upstream {{ .ClusterName }}_{{ .Namespace }}_{{ .Service }} {
+    {{- range .Endpoints }}
+    server {{ . }}:{{ $.ServicePort }};
     {{- end }}
 }
 
 server {
-    listen {{ $.IP }}:{{ $port }};
+    listen {{ .IP }}:{{ .ServicePort }};
     location / {
-        proxy_pass http://{{ $.Namespace }}_{{ $.Service }}_{{ $port }};
+        proxy_pass http://{{ .ClusterName }}_{{ .Namespace }}_{{ .Service }};
     }
 }
-{{ end }}

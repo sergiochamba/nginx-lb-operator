@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-lb-operator-controller-manager
+  namespace: nginx-lb-operator-system
+  labels:
+    control-plane: controller-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+    spec:
+      serviceAccountName: nginx-lb-operator-controller-manager
+      containers:
+        - name: manager
+          image: sergiochamba/nginx-lb-operator:latest
+          args:
+            - "--enable-leader-election"
+          env:
+            - name: NGINX_CREDENTIALS_SECRET
+              value: "nginx-server-credentials"
+            - name: NGINX_CREDENTIALS_NAMESPACE
+              value: "nginx-lb-operator-system"
+            - name: NGINX_NETWORK_INTERFACE
+              value: "eth0"
+            - name: CLUSTER_NAME
+              value: "your-cluster-name" # Replace with your actual cluster name
+          volumeMounts:
+            - name: ssh-keys
+              mountPath: /app/ssh
+              readOnly: true
+          resources:
+            limits:
+              cpu: 100m
+              memory: 50Mi
+            requests:
+              cpu: 50m
+              memory: 30Mi
+      volumes:
+        - name: ssh-keys
+          secret:
+            secretName: nginx-server-credentials
+            items:
+              - key: NGINX_SSH_PRIVATE_KEY
+                path: id_rsa
+              - key: NGINX_KNOWN_HOSTS
+                path: known_hosts

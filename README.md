@@ -1,42 +1,38 @@
 # NGINX Load Balancer Operator
 
-This operator watches for Kubernetes Services of type `LoadBalancer` and configures an external NGINX load balancer accordingly.
+This operator manages LoadBalancer services in a Kubernetes cluster by configuring an external NGINX server to handle traffic.
 
-## **Features**
+## Features
 
-- Assigns IPs from a predefined IP pool to services after successful configuration.
-- Configures NGINX to route traffic to the service endpoints.
-- Adds assigned IPs to the NGINX server's network interface.
-- Allows sharing of IPs across services using different ports.
-- Updates configurations when services, endpoints, or nodes change.
-- Cleans up configurations when services are deleted.
-- Implements persistent IP allocations using ConfigMaps.
+- Allocates IPs from a configurable IP pool.
+- Generates NGINX and Keepalived configurations, including the cluster name to avoid conflicts.
+- Balances provisioned IPs among active and standby groups.
+- Handles service creation, update, and deletion.
+- Remains stateless and reconciles state on restarts.
 
-## **Prerequisites**
+## Requirements
 
-- Kubernetes cluster
-- Operator SDK installed
-- Access to an NGINX server with SSH
-- SSH key-based authentication configured
-- NGINX server's SSH public key added to known hosts
+- Kubernetes cluster.
+- External NGINX server(s) with SSH access.
+- Keepalived installed on NGINX server(s).
+- SSH keys and known hosts configured.
 
-## **Setup**
+## Configuration
 
-1. **Clone the repository:**
+### IP Pool
 
-   ```bash
-   git clone https://github.com/sergiochamba/nginx-lb-operator.git
-   cd nginx-lb-operator
-   ```
+Define the IP pool in `config/ip-pool-config.yaml`.
 
-2. **Build the operator:**
-
-   ```bash
-   make docker-build docker-push
-   ```
-
-3. **Deploy the operator:**
-
-   ```bash
-   make deploy
-   ```
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ip-pool-config
+  namespace: nginx-lb-operator-system
+data:
+  ip_pool: |
+    # Single IPs
+    10.1.1.55
+    10.1.1.56
+    # IP Range
+    10.1.1.60 - 10.1.1.65

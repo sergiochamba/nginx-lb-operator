@@ -11,14 +11,18 @@ import (
     "k8s.io/apimachinery/pkg/types"
     ctrl "sigs.k8s.io/controller-runtime"
     "sigs.k8s.io/controller-runtime/pkg/client"
+    "sigs.k8s.io/controller-runtime/pkg/handler"
     "sigs.k8s.io/controller-runtime/pkg/log"
+    "sigs.k8s.io/controller-runtime/pkg/predicate"
+    "sigs.k8s.io/controller-runtime/pkg/reconcile"
+    "sigs.k8s.io/controller-runtime/pkg/source"
 
     "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
     "github.com/sergiochamba/nginx-lb-operator/pkg/nginx"
 )
 
 const (
-    finalizerName = "nginx-lb-operator.finalizers.yourdomain.com"
+    finalizerName = "nginx-lb-operator.finalizers.sergiochamba.com"
 )
 
 type ServiceReconciler struct {
@@ -30,11 +34,30 @@ type ServiceReconciler struct {
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
     return ctrl.NewControllerManagedBy(mgr).
         For(&corev1.Service{}).
-        Owns(&corev1.Endpoints{}).
+        Watches(&source.Kind{Type: &corev1.Endpoints{}}, &handler.EnqueueRequestForObject{}).
+        Watches(&source.Kind{Type: &corev1.Node{}}, handler.EnqueueRequestsFromMapFunc(func(obj client.Object) []reconcile.Request {
+            // Reconcile all services when a node changes
+            svcList := &corev1.ServiceList{}
+            if err := r.List(context.Background(), svcList, client.InNamespace("")); err != nil {
+                return nil
+            }
+            var requests []reconcile.Request
+            for _, svc := range svcList.Items {
+                if svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
+                    requests = append(requests, reconcile.Request{
+                        NamespacedName: types.NamespacedName{
+                            Namespace: svc.Namespace,
+                            Name:      svc.Name,
+                        },
+                    })
+                }
+            }
+            return requests
+        })).
+        WithEventFilter(predicate.GenerationChangedPredicate{}). // Optional: Filter only when generation changes
         Complete(r)
 }
 
-// Reconcile function
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
     logger := log.FromContext(ctx)
 
@@ -101,28 +124,22 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Service) error {
     logger := log.FromContext(ctx)
 
-    // Extract service ports
-    ports := []int32{}
-    for _, port := range svc.Spec.Ports {
-        ports = append(ports, port.Port)
+    // Extract service port
+    if len(svc.Spec.Ports) != 1 {
+        err := fmt.Errorf("service %s/%s must have exactly one port", svc.Namespace, svc.Name)
+        logger.Error(err, "Invalid service ports")
+        return err
     }
+    servicePort := svc.Spec.Ports[0].Port
 
     // Begin transaction-like behavior
     allocated := false
-    ipAssigned := false
     configApplied := false
 
     var allocation *ipam.Allocation
 
     defer func() {
         if !configApplied {
-            // Rollback actions
-            if ipAssigned {
-                // Remove IP from NGINX server
-                if err := nginx.RemoveIPFromNginxServer(allocation.IP); err != nil {
-                    logger.Error(err, "Failed to remove IP from NGINX server during rollback")
-                }
-            }
             if allocated {
                 // Release IP allocation
                 if err := ipam.ReleaseAllocation(allocation.Namespace, allocation.Service); err != nil {
@@ -134,22 +151,13 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
 
     // Allocate IP and ports
     var err error
-    allocation, err = ipam.AllocateIPAndPorts(svc.Namespace, svc.Name, ports)
+    allocation, err = ipam.AllocateIPAndPorts(svc.Namespace, svc.Name, []int32{servicePort})
     if err != nil {
         logger.Error(err, "IP allocation failed")
         return err
     }
     allocated = true
     logger.Info("Allocated IP and ports", "IP", allocation.IP, "Ports", allocation.Ports)
-
-    // Assign IP to NGINX server
-    err = nginx.AssignIPToNginxServer(allocation.IP)
-    if err != nil {
-        logger.Error(err, "Failed to assign IP to NGINX server")
-        return err
-    }
-    ipAssigned = true
-    logger.Info("Assigned IP to NGINX server", "IP", allocation.IP)
 
     // Fetch endpoints
     endpoints := &corev1.Endpoints{}
@@ -159,20 +167,20 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
         return err
     }
 
-    // Extract endpoint IPs
-    endpointIPs := []string{}
-    for _, subset := range endpoints.Subsets {
-        for _, addr := range subset.Addresses {
-            endpointIPs = append(endpointIPs, addr.IP)
-        }
+    // Extract node IPs for endpoints
+    nodeIPs, err := r.getNodeIPsForEndpoints(ctx, endpoints)
+    if err != nil {
+        logger.Error(err, "Failed to get node IPs for endpoints")
+        return err
     }
-    if len(endpointIPs) == 0 {
+
+    if len(nodeIPs) == 0 {
         logger.Error(fmt.Errorf("no endpoints available"), "No endpoints for service")
         return fmt.Errorf("no endpoints available for service %s/%s", svc.Namespace, svc.Name)
     }
 
     // Configure NGINX
-    err = nginx.ConfigureService(allocation, ports, endpointIPs)
+    err = nginx.ConfigureService(allocation, servicePort, nodeIPs)
     if err != nil {
         logger.Error(err, "Failed to configure NGINX")
         return err
@@ -180,8 +188,13 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
     configApplied = true
     logger.Info("Configured NGINX for service", "service", svc.Name)
 
-    // Validate configuration (e.g., health checks)
-    // TODO: Implement health checks if needed
+    // Update Keepalived configurations
+    err = nginx.UpdateKeepalivedConfigs()
+    if err != nil {
+        logger.Error(err, "Failed to update Keepalived configurations")
+        return err
+    }
+    logger.Info("Updated Keepalived configurations")
 
     // Update service status
     svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{
@@ -202,22 +215,54 @@ func (r *ServiceReconciler) handleServiceDeletion(ctx context.Context, namespace
 
     logger.Info("Handling service deletion", "service", name, "namespace", namespace)
 
-    // Remove NGINX configuration
-    err := nginx.RemoveServiceConfiguration(namespace, name)
-    if err != nil {
-        logger.Error(err, "Failed to remove NGINX configuration")
-        return err
-    }
-
     // Release IP and ports
-    err = ipam.ReleaseAllocation(namespace, name)
+    err := ipam.ReleaseAllocation(namespace, name)
     if err != nil {
         logger.Error(err, "Failed to release IP allocation")
         return err
     }
 
+    // Remove NGINX configuration
+    err = nginx.RemoveServiceConfiguration(namespace, name)
+    if err != nil {
+        logger.Error(err, "Failed to remove NGINX configuration")
+        return err
+    }
+    logger.Info("Removed NGINX configuration for service", "service", name)
+
+    // Update Keepalived configurations
+    err = nginx.UpdateKeepalivedConfigs()
+    if err != nil {
+        logger.Error(err, "Failed to update Keepalived configurations")
+        return err
+    }
+    logger.Info("Updated Keepalived configurations")
+
     logger.Info("Successfully handled service deletion", "service", name)
     return nil
+}
+
+func (r *ServiceReconciler) getNodeIPsForEndpoints(ctx context.Context, endpoints *corev1.Endpoints) ([]string, error) {
+    nodeIPs := []string{}
+    for _, subset := range endpoints.Subsets {
+        for _, addr := range subset.Addresses {
+            if addr.NodeName == nil {
+                continue
+            }
+            node := &corev1.Node{}
+            err := r.Get(ctx, types.NamespacedName{Name: *addr.NodeName}, node)
+            if err != nil {
+                return nil, err
+            }
+            for _, address := range node.Status.Addresses {
+                if address.Type == corev1.NodeInternalIP {
+                    nodeIPs = append(nodeIPs, address.Address)
+                    break
+                }
+            }
+        }
+    }
+    return nodeIPs, nil
 }
 
 // Helper functions
