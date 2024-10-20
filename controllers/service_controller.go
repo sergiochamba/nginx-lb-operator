@@ -13,9 +13,7 @@ import (
     "sigs.k8s.io/controller-runtime/pkg/client"
     "sigs.k8s.io/controller-runtime/pkg/handler"
     "sigs.k8s.io/controller-runtime/pkg/log"
-    "sigs.k8s.io/controller-runtime/pkg/predicate"
     "sigs.k8s.io/controller-runtime/pkg/reconcile"
-    "sigs.k8s.io/controller-runtime/pkg/source"
 
     "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
     "github.com/sergiochamba/nginx-lb-operator/pkg/nginx"
@@ -34,28 +32,24 @@ type ServiceReconciler struct {
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
     return ctrl.NewControllerManagedBy(mgr).
         For(&corev1.Service{}).
-        Watches(&source.Kind{Type: &corev1.Endpoints{}}, &handler.EnqueueRequestForObject{}).
-        Watches(&source.Kind{Type: &corev1.Node{}}, handler.EnqueueRequestsFromMapFunc(func(obj client.Object) []reconcile.Request {
-            // Reconcile all services when a node changes
-            svcList := &corev1.ServiceList{}
-            if err := r.List(context.Background(), svcList, client.InNamespace("")); err != nil {
-                return nil
-            }
-            var requests []reconcile.Request
-            for _, svc := range svcList.Items {
-                if svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
-                    requests = append(requests, reconcile.Request{
-                        NamespacedName: types.NamespacedName{
-                            Namespace: svc.Namespace,
-                            Name:      svc.Name,
-                        },
-                    })
-                }
-            }
-            return requests
-        })).
-        WithEventFilter(predicate.GenerationChangedPredicate{}). // Optional: Filter only when generation changes
+        Watches(
+            &corev1.Endpoints{},
+            handler.EnqueueRequestsFromMapFunc(r.endpointsToServiceMapper),
+        ).
         Complete(r)
+}
+
+func (r *ServiceReconciler) endpointsToServiceMapper(obj client.Object) []reconcile.Request {
+    endpoints, ok := obj.(*corev1.Endpoints)
+    if !ok {
+        return nil
+    }
+    return []reconcile.Request{
+        {NamespacedName: types.NamespacedName{
+            Name:      endpoints.Name,
+            Namespace: endpoints.Namespace,
+        }},
+    }
 }
 
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -284,3 +278,6 @@ func removeString(slice []string, s string) []string {
     }
     return result
 }
+
+
+
