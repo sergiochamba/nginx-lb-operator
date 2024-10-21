@@ -9,7 +9,7 @@ import (
     clientgoscheme "k8s.io/client-go/kubernetes/scheme"
     ctrl "sigs.k8s.io/controller-runtime"
     "sigs.k8s.io/controller-runtime/pkg/log/zap"
-
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
     "github.com/sergiochamba/nginx-lb-operator/controllers"
     "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
     "github.com/sergiochamba/nginx-lb-operator/pkg/nginx"
@@ -39,7 +39,9 @@ func main() {
 
     mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
         Scheme:             scheme,
-        MetricsBindAddress: metricsAddr,
+        Metrics: metricsserver.Options{
+			BindAddress: metricsAddr,
+		},
         LeaderElection:     enableLeaderElection,
         LeaderElectionID:   "nginx-lb-operator-lock",
     })

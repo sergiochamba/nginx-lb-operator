@@ -13,8 +13,8 @@ import (
     "sigs.k8s.io/controller-runtime/pkg/client"
     "sigs.k8s.io/controller-runtime/pkg/handler"
     "sigs.k8s.io/controller-runtime/pkg/log"
-    "sigs.k8s.io/controller-runtime/pkg/reconcile"
-
+    "sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
     "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
     "github.com/sergiochamba/nginx-lb-operator/pkg/nginx"
 )
@@ -34,22 +34,10 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
         For(&corev1.Service{}).
         Watches(
             &corev1.Endpoints{},
-            handler.EnqueueRequestsFromMapFunc(r.endpointsToServiceMapper),
+            &handler.EnqueueRequestForObject{},
+            builder.WithPredicates(predicate.GenerationChangedPredicate{}),
         ).
         Complete(r)
-}
-
-func (r *ServiceReconciler) endpointsToServiceMapper(obj client.Object) []reconcile.Request {
-    endpoints, ok := obj.(*corev1.Endpoints)
-    if !ok {
-        return nil
-    }
-    return []reconcile.Request{
-        {NamespacedName: types.NamespacedName{
-            Name:      endpoints.Name,
-            Namespace: endpoints.Namespace,
-        }},
-    }
 }
 
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -278,6 +266,3 @@ func removeString(slice []string, s string) []string {
     }
     return result
 }
-
-
-
