@@ -18,3 +18,22 @@ rules:
       - secrets
       - nodes
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-lb-operator
+  namespace: nginx-lb-operator-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nginx-lb-operator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nginx-lb-operator-role
+subjects:
+  - kind: ServiceAccount
+    name: nginx-lb-operator
+    namespace: nginx-lb-operator-system

@@ -15,21 +15,21 @@ spec:
       labels:
         control-plane: controller-manager
     spec:
-      serviceAccountName: nginx-lb-operator-controller-manager
+      serviceAccountName: nginx-lb-operator
       containers:
         - name: manager
           image: sergiochamba/nginx-lb-operator:latest
           args:
-            - "--enable-leader-election"
+            - "--leader-elect"
           env:
             - name: NGINX_CREDENTIALS_SECRET
               value: "nginx-server-credentials"
             - name: NGINX_CREDENTIALS_NAMESPACE
               value: "nginx-lb-operator-system"
             - name: NGINX_NETWORK_INTERFACE
-              value: "eth0"
+              value: "ens160"
             - name: CLUSTER_NAME
-              value: "your-cluster-name" # Replace with your actual cluster name
+              value: "harso-master" # Replace with your actual cluster name
           volumeMounts:
             - name: ssh-keys
               mountPath: /app/ssh
@@ -48,5 +48,5 @@ spec:
             items:
               - key: NGINX_SSH_PRIVATE_KEY
                 path: id_rsa
-              - key: NGINX_KNOWN_HOSTS
-                path: known_hosts
+              #- key: NGINX_KNOWN_HOSTS
+              #  path: known_hosts

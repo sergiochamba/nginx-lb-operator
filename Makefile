@@ -32,7 +32,7 @@ docker-push:
 
 # Deploy operator to cluster
 deploy:
-	kubectl apply -f config/default
+	kubectl apply -f config/
 
 # Undeploy operator from cluster
 undeploy:
