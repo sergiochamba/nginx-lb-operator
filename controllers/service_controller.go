@@ -20,7 +20,7 @@ import (
 )
 
 const (
-    finalizerName = "nginx-lb-operator.finalizers.sergiochamba.com"
+    finalizerName = "sergiochamba.com/nginx-lb-operator-finalizer"
 )
 
 type ServiceReconciler struct {

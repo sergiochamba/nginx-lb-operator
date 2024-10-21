@@ -48,5 +48,5 @@ spec:
             items:
               - key: NGINX_SSH_PRIVATE_KEY
                 path: id_rsa
-              #- key: NGINX_KNOWN_HOSTS
-              #  path: known_hosts
+              - key: NGINX_KNOWN_HOSTS
+                path: known_hosts

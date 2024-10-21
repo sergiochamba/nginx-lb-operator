@@ -1,9 +1,9 @@
 package main
 
 import (
+    "context"
     "flag"
     "os"
-    "time"
 
     "k8s.io/apimachinery/pkg/runtime"
     utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -11,6 +11,7 @@ import (
     ctrl "sigs.k8s.io/controller-runtime"
     "sigs.k8s.io/controller-runtime/pkg/log/zap"
     metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+    "sigs.k8s.io/controller-runtime/pkg/manager"
 
     "github.com/sergiochamba/nginx-lb-operator/controllers"
     "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
@@ -61,7 +62,7 @@ func main() {
     }
 
     // Add a Runnable to initialize IPAM and NGINX once the manager is started
-    err = mgr.Add(ctrl.RunnableFunc(func(ctx context.Context) error {
+    err = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
         // Initialize IPAM module
         if err := ipam.Init(mgr.GetClient()); err != nil {
             setupLog.Error(err, "unable to initialize IPAM module")
@@ -73,7 +74,7 @@ func main() {
             setupLog.Error(err, "unable to initialize NGINX module")
             return err
         }
-        
+
         setupLog.Info("Successfully initialized IPAM and NGINX modules")
         return nil
     }))
