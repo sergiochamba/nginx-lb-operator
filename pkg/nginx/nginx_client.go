@@ -426,17 +426,16 @@ func getUniqueVRID() (int, error) {
     }
     defer file.Close()
 
-    allocatedVRIDs := map[int]bool{}
+    allocatedVRIDs := make(map[int]bool)
     scanner := bufio.NewScanner(file)
     for scanner.Scan() {
         line := strings.TrimSpace(scanner.Text())
-        if line == "" || strings.HasPrefix(line, "#") {
+        if line == "" {
             continue
         }
-        var vrid int
-        _, err := fmt.Sscanf(line, "vrid %d", &vrid)
+        vrid, err := strconv.Atoi(line)
         if err != nil {
-            log.Log.Error(err, "Failed to parse VRID from file")
+            log.Log.Error(err, "Failed to parse VRID from file", "Line", line)
             continue
         }
         allocatedVRIDs[vrid] = true
@@ -454,14 +453,29 @@ func getUniqueVRID() (int, error) {
             break
         }
     }
+
     if newVRID == 0 {
+        log.Log.Error(nil, "No available VRIDs found in the range 1-255")
         return 0, fmt.Errorf("no available VRIDs found")
     }
 
-    // Write the new VRID to the allocation file
-    _, err = file.WriteString(fmt.Sprintf("vrid %d\n", newVRID))
+    // Reopen the file for appending the new VRID
+    fileForWrite, err := os.OpenFile(vridAllocPath, os.O_APPEND|os.O_WRONLY, 0644)
+    if err != nil {
+        log.Log.Error(err, "Failed to reopen VRID allocations file for writing")
+        return 0, err
+    }
+    defer fileForWrite.Close()
+
+    _, err = fileForWrite.WriteString(fmt.Sprintf("%d\n", newVRID))
     if err != nil {
         log.Log.Error(err, "Failed to write new VRID to allocations file")
+        return 0, err
+    }
+
+    // Ensure data is flushed to disk
+    if err := fileForWrite.Sync(); err != nil {
+        log.Log.Error(err, "Failed to sync VRID allocations file")
         return 0, err
     }
 
