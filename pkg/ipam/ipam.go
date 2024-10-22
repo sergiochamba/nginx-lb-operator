@@ -208,16 +208,23 @@ func saveAllocations() error {
     cm.Name = ipAllocationsConfigMapName
     cm.Namespace = configMapNamespace
 
-    log.Log.Info("Marshaling IP allocations to JSON")
+    // Log the raw allocations before marshaling to JSON
+    log.Log.Info("Raw IP allocations data", "Allocations", allocations)
+
+    // Marshal allocations to JSON
+    log.Log.Info("Marshaling IP allocations to JSON", "Allocations", allocations)
     data, err := json.Marshal(allocationsToList())
     if err != nil {
         log.Log.Error(err, "Failed to marshal IP allocations data")
         return err
     }
+    log.Log.Info("Successfully marshaled IP allocations to JSON", "MarshaledData", string(data))
 
     cm.Data = map[string]string{
         "allocations": string(data),
     }
+
+    log.Log.Info("ConfigMap data prepared for saving", "ConfigMapData", cm.Data)
 
     log.Log.Info("Attempting to save IP allocations to ConfigMap", "ConfigMapName", ipAllocationsConfigMapName, "Namespace", configMapNamespace)
 
@@ -227,7 +234,7 @@ func saveAllocations() error {
     if err != nil {
         if apierrors.IsNotFound(err) {
             // ConfigMap does not exist, create it
-            log.Log.Info("IP allocations ConfigMap not found, creating new ConfigMap")
+            log.Log.Info("IP allocations ConfigMap not found, creating new ConfigMap", "ConfigMapData", cm.Data)
             err = k8sClient.Create(ctx, cm)
             if err != nil {
                 log.Log.Error(err, "Failed to create IP allocations ConfigMap")
@@ -241,8 +248,12 @@ func saveAllocations() error {
         }
     } else {
         // ConfigMap exists, update it
+        log.Log.Info("Existing ConfigMap found. Preparing to update", "ExistingConfigMapData", existingCM.Data)
+
         existingCM.Data = cm.Data
-        log.Log.Info("Updating existing IP allocations ConfigMap", "ConfigMapName", ipAllocationsConfigMapName, "Namespace", configMapNamespace)
+
+        log.Log.Info("Updating existing IP allocations ConfigMap with new data", "NewConfigMapData", existingCM.Data)
+
         err = k8sClient.Update(ctx, existingCM)
         if err != nil {
             log.Log.Error(err, "Failed to update IP allocations ConfigMap")

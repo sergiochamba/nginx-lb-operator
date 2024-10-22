@@ -9,7 +9,7 @@ import (
     "sort"
     "strings"
     "text/template"
-
+	"sigs.k8s.io/controller-runtime/pkg/log"
     "github.com/sergiochamba/nginx-lb-operator/pkg/ipam"
     "golang.org/x/crypto/ssh"
     "golang.org/x/crypto/ssh/knownhosts"
@@ -109,6 +109,7 @@ func RemoveServiceConfiguration(namespace, service string) error {
 }
 
 func UpdateKeepalivedConfigs() error {
+    log.Log.Info("Updating Keepalived configurations")
     return nginxServer.updateKeepalivedConfigs()
 }
 
@@ -182,8 +183,11 @@ func (server *NginxServer) updateKeepalivedConfigs() error {
     // Get allocated IPs
     allocatedIPs, err := ipam.GetAllocatedIPs()
     if err != nil {
+        log.Log.Error(err, "Failed to get allocated IPs")
         return err
     }
+
+    log.Log.Info("Allocated IPs retrieved for Keepalived configuration", "AllocatedIPs", allocatedIPs)
 
     // Convert map to slice and sort
     vipList := []string{}
@@ -193,46 +197,63 @@ func (server *NginxServer) updateKeepalivedConfigs() error {
     sort.Strings(vipList)
 
     // Balance IPs between two groups
+    log.Log.Info("Splitting VIPs into groups for Keepalived")
     group1VIPs, group2VIPs := splitVIPs(vipList)
 
     // Generate configurations for primary and secondary servers
+    log.Log.Info("Generating Keepalived configuration for primary group")
     primaryConfigContent, err := server.generateKeepalivedConfig(group1VIPs, group2VIPs, true)
     if err != nil {
+        log.Log.Error(err, "Failed to generate Keepalived configuration for primary group")
         return err
     }
+    log.Log.Info("Successfully generated Keepalived configuration for primary group")
 
+    log.Log.Info("Generating Keepalived configuration for secondary group")
     secondaryConfigContent, err := server.generateKeepalivedConfig(group1VIPs, group2VIPs, false)
     if err != nil {
+        log.Log.Error(err, "Failed to generate Keepalived configuration for secondary group")
         return err
     }
-
-    // Define filenames based on cluster name
-    primaryConfigPath := fmt.Sprintf("/etc/keepalived/%s_keepalived.conf", clusterName)
-    secondaryConfigPath := fmt.Sprintf("/etc/keepalived/%s_keepalived.conf.secondary", clusterName)
+    log.Log.Info("Successfully generated Keepalived configuration for secondary group")
 
     // Write primary configuration to the server
+    primaryConfigPath := fmt.Sprintf("/etc/keepalived/%s_keepalived.conf", clusterName)
+    log.Log.Info("Writing primary Keepalived configuration", "Path", primaryConfigPath)
     err = server.writeRemoteFile(primaryConfigPath, primaryConfigContent)
     if err != nil {
+        log.Log.Error(err, "Failed to write primary Keepalived configuration to server")
         return err
     }
+    log.Log.Info("Successfully wrote primary Keepalived configuration")
 
     // Write secondary configuration to a separate file
+    secondaryConfigPath := fmt.Sprintf("/etc/keepalived/%s_keepalived.conf.secondary", clusterName)
+    log.Log.Info("Writing secondary Keepalived configuration", "Path", secondaryConfigPath)
     err = server.writeRemoteFile(secondaryConfigPath, secondaryConfigContent)
     if err != nil {
+        log.Log.Error(err, "Failed to write secondary Keepalived configuration to server")
         return err
     }
+    log.Log.Info("Successfully wrote secondary Keepalived configuration")
 
     // Ensure main keepalived.conf includes the operator's configuration
+    log.Log.Info("Ensuring Keepalived main configuration includes the operator's configuration")
     err = server.ensureKeepalivedIncludesOperatorConfig(primaryConfigPath)
     if err != nil {
+        log.Log.Error(err, "Failed to ensure Keepalived includes operator configuration")
         return err
     }
+    log.Log.Info("Successfully ensured Keepalived configuration includes the operator's config")
 
     // Reload Keepalived on the primary server
+    log.Log.Info("Reloading Keepalived configuration")
     err = server.reloadKeepalived()
     if err != nil {
+        log.Log.Error(err, "Failed to reload Keepalived")
         return err
     }
+    log.Log.Info("Successfully reloaded Keepalived configuration")
 
     return nil
 }
