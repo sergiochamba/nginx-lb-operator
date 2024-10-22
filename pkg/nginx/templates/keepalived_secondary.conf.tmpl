@@ -6,6 +6,7 @@ vrrp_instance VI_{{ .ClusterName }}_GROUP1 {
     virtual_router_id {{ .VirtualRouterID1 }}
     priority 100
     advert_int 1
+    dont_track_primary
 
     authentication {
         auth_type PASS
@@ -25,6 +26,7 @@ vrrp_instance VI_{{ .ClusterName }}_GROUP2 {
     virtual_router_id {{ .VirtualRouterID2 }}
     priority 101
     advert_int 1
+    dont_track_primary
 
     authentication {
         auth_type PASS
