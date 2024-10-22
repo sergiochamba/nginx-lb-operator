@@ -92,6 +92,29 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
         return ctrl.Result{}, nil
     }
 
+    // Retry fetching endpoints to handle cases where they are not immediately available
+    var endpoints corev1.Endpoints
+    maxRetries := 5
+    for i := 0; i < maxRetries; i++ {
+        err = r.Get(ctx, req.NamespacedName, &endpoints)
+        if err != nil {
+            logger.Error(err, "Failed to get Endpoints, retrying...")
+            time.Sleep(2 * time.Second)
+            continue
+        }
+        if len(endpoints.Subsets) == 0 {
+            logger.Info("No endpoints available, retrying...")
+            time.Sleep(2 * time.Second)
+            continue
+        }
+        break
+    }
+
+    if len(endpoints.Subsets) == 0 {
+        logger.Error(nil, "No endpoints available for service", "Namespace", svc.Namespace, "Service", svc.Name)
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
     // Handle the service
     err = r.handleService(ctx, svc)
     if err != nil {

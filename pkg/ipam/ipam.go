@@ -200,14 +200,15 @@ func loadAllocations() error {
 }
 
 func saveAllocations() error {
-    allocationMutex.Lock()
-    defer allocationMutex.Unlock()
+    // allocationMutex.Lock() - Removed to avoid double locking
+    // defer allocationMutex.Unlock() - Removed to avoid double unlocking
 
     ctx := context.Background()
     cm := &corev1.ConfigMap{}
     cm.Name = ipAllocationsConfigMapName
     cm.Namespace = configMapNamespace
 
+    log.Log.Info("Marshaling IP allocations to JSON")
     data, err := json.Marshal(allocationsToList())
     if err != nil {
         log.Log.Error(err, "Failed to marshal IP allocations data")
@@ -218,20 +219,36 @@ func saveAllocations() error {
         "allocations": string(data),
     }
 
-    log.Log.Info("Saving IP allocations to ConfigMap", "ConfigMapName", ipAllocationsConfigMapName, "Namespace", configMapNamespace)
-    err = k8sClient.Update(ctx, cm)
+    log.Log.Info("Attempting to save IP allocations to ConfigMap", "ConfigMapName", ipAllocationsConfigMapName, "Namespace", configMapNamespace)
+
+    // First, try to get the ConfigMap to determine whether we need to create or update
+    existingCM := &corev1.ConfigMap{}
+    err = k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, existingCM)
     if err != nil {
         if apierrors.IsNotFound(err) {
+            // ConfigMap does not exist, create it
             log.Log.Info("IP allocations ConfigMap not found, creating new ConfigMap")
             err = k8sClient.Create(ctx, cm)
             if err != nil {
                 log.Log.Error(err, "Failed to create IP allocations ConfigMap")
                 return err
             }
+            log.Log.Info("IP allocations ConfigMap created successfully")
         } else {
+            // Failed to get the ConfigMap for an unknown reason
+            log.Log.Error(err, "Failed to get existing IP allocations ConfigMap")
+            return err
+        }
+    } else {
+        // ConfigMap exists, update it
+        existingCM.Data = cm.Data
+        log.Log.Info("Updating existing IP allocations ConfigMap", "ConfigMapName", ipAllocationsConfigMapName, "Namespace", configMapNamespace)
+        err = k8sClient.Update(ctx, existingCM)
+        if err != nil {
             log.Log.Error(err, "Failed to update IP allocations ConfigMap")
             return err
         }
+        log.Log.Info("IP allocations ConfigMap updated successfully")
     }
 
     log.Log.Info("IP allocations saved successfully")
@@ -261,6 +278,8 @@ func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, 
 
     // Find an IP with available ports
     for _, ip := range ipPool {
+        log.Log.Info("Checking IP for availability", "IP", ip)
+
         portUsage, exists := ipPortUsage[ip]
         if !exists {
             portUsage = make(map[int32]string)
@@ -269,38 +288,45 @@ func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, 
 
         conflict := false
         for _, port := range ports {
+            log.Log.Info("Checking port for conflict", "IP", ip, "Port", port)
             if _, inUse := portUsage[port]; inUse {
+                log.Log.Info("Port conflict detected", "IP", ip, "Port", port)
                 conflict = true
                 break
             }
         }
 
-        if !conflict {
-            // Allocate IP and ports
-            for _, port := range ports {
-                portUsage[port] = key
-            }
-            allocation := &Allocation{
-                Namespace: namespace,
-                Service:   service,
-                IP:        ip,
-                Ports:     ports,
-            }
-            allocations[key] = allocation
-
-            // Save allocations to ConfigMap
-            err := saveAllocations()
-            if err != nil {
-                log.Log.Error(err, "Failed to save IP allocations after allocation")
-                return nil, err
-            }
-
-            log.Log.Info("IP and ports allocated successfully", "Namespace", namespace, "Service", service, "IP", ip, "Ports", ports)
-            return allocation, nil
+        if conflict {
+            log.Log.Info("IP is in conflict, skipping", "IP", ip)
+            continue
         }
+
+        // Allocate IP and ports
+        log.Log.Info("Allocating IP and ports", "IP", ip, "Ports", ports)
+        for _, port := range ports {
+            portUsage[port] = key
+        }
+        allocation := &Allocation{
+            Namespace: namespace,
+            Service:   service,
+            IP:        ip,
+            Ports:     ports,
+        }
+        allocations[key] = allocation
+
+        // Save allocations to ConfigMap
+        log.Log.Info("Saving new allocation", "Namespace", namespace, "Service", service, "IP", ip, "Ports", ports)
+        err := saveAllocations()
+        if err != nil {
+            log.Log.Error(err, "Failed to save IP allocations after allocation")
+            return nil, err
+        }
+
+        log.Log.Info("IP and ports allocated successfully", "Namespace", namespace, "Service", service, "IP", ip, "Ports", ports)
+        return allocation, nil
     }
 
-    log.Log.Error(nil, "No available IPs with required ports", "Namespace", namespace, "Service", service)
+    log.Log.Error(nil, "No available IPs found that can accommodate the requested ports", "Namespace", namespace, "Service", service)
     return nil, errors.New("no available IPs with required ports")
 }
 

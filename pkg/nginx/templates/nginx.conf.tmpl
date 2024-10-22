@@ -6,7 +6,5 @@ upstream {{ .ClusterName }}_{{ .Namespace }}_{{ .Service }} {
 
 server {
     listen {{ .IP }}:{{ .ServicePort }};
-    location / {
-        proxy_pass http://{{ .ClusterName }}_{{ .Namespace }}_{{ .Service }};
-    }
+    proxy_pass {{ .ClusterName }}_{{ .Namespace }}_{{ .Service }};
 }
