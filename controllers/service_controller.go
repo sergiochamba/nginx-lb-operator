@@ -92,26 +92,26 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
         return ctrl.Result{}, nil
     }
 
-    // Retry fetching endpoints to handle cases where they are not immediately available
+    // Retry fetching endpoints to handle cases where they are not immediately available (with exponential backoff)
     var endpoints corev1.Endpoints
     maxRetries := 5
     for i := 0; i < maxRetries; i++ {
         err = r.Get(ctx, req.NamespacedName, &endpoints)
         if err != nil {
             logger.Error(err, "Failed to get Endpoints, retrying...")
-            time.Sleep(2 * time.Second)
+            time.Sleep(time.Second * time.Duration(2<<i)) // Exponential backoff (2, 4, 8, 16, etc.)
             continue
         }
         if len(endpoints.Subsets) == 0 {
             logger.Info("No endpoints available, retrying...")
-            time.Sleep(2 * time.Second)
+            time.Sleep(time.Second * time.Duration(2<<i))
             continue
         }
         break
     }
 
     if len(endpoints.Subsets) == 0 {
-        logger.Error(nil, "No endpoints available for service", "Namespace", svc.Namespace, "Service", svc.Name)
+        logger.Info("No endpoints available for service, requeueing...", "Namespace", svc.Namespace, "Service", svc.Name)
         return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
     }
 
@@ -151,6 +151,10 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
                     logger.Error(err, "Failed to release IP allocation during rollback")
                 }
             }
+            // Rollback Keepalived configuration if updated but the rest failed
+            if err := nginx.UpdateKeepalivedConfigs(); err != nil {
+                logger.Error(err, "Failed to rollback Keepalived configurations during rollback")
+            }
         }
     }()
 
@@ -184,24 +188,26 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
         return fmt.Errorf("no endpoints available for service %s/%s", svc.Namespace, svc.Name)
     }
 
-    // Configure NGINX
+    // Update Keepalived configurations BEFORE configuring NGINX
+    logger.Info("Updating Keepalived configurations")
+    err = nginx.UpdateKeepalivedConfigs()
+    if err != nil {
+        logger.Error(err, "Failed to update Keepalived configurations")
+        return err
+    }
+    logger.Info("Keepalived configurations updated successfully")
+
+    // Configure NGINX AFTER Keepalived is updated
+    logger.Info("Configuring NGINX for service", "Service", svc.Name)
     err = nginx.ConfigureService(allocation, servicePort, nodeIPs)
     if err != nil {
         logger.Error(err, "Failed to configure NGINX")
         return err
     }
     configApplied = true
-    logger.Info("Configured NGINX for service", "service", svc.Name)
+    logger.Info("Configured NGINX for service", "Service", svc.Name)
 
-    // Update Keepalived configurations
-    err = nginx.UpdateKeepalivedConfigs()
-    if err != nil {
-        logger.Error(err, "Failed to update Keepalived configurations")
-        return err
-    }
-    logger.Info("Updated Keepalived configurations")
-
-    // Update service status
+    // Update service status with the allocated LoadBalancer IP
     svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{
         {IP: allocation.IP},
     }
@@ -235,7 +241,7 @@ func (r *ServiceReconciler) handleServiceDeletion(ctx context.Context, namespace
     }
     logger.Info("Removed NGINX configuration for service", "service", name)
 
-    // Update Keepalived configurations
+    // Update Keepalived configurations AFTER NGINX removal
     err = nginx.UpdateKeepalivedConfigs()
     if err != nil {
         logger.Error(err, "Failed to update Keepalived configurations")

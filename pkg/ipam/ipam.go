@@ -200,19 +200,14 @@ func loadAllocations() error {
 }
 
 func saveAllocations() error {
-    // allocationMutex.Lock() - Removed to avoid double locking
-    // defer allocationMutex.Unlock() - Removed to avoid double unlocking
-
     ctx := context.Background()
     cm := &corev1.ConfigMap{}
     cm.Name = ipAllocationsConfigMapName
     cm.Namespace = configMapNamespace
 
-    // Log the raw allocations before marshaling to JSON
-    log.Log.Info("Raw IP allocations data", "Allocations", allocations)
+    log.Log.Info("Raw IP allocations data before marshaling", "Allocations", allocations)
 
     // Marshal allocations to JSON
-    log.Log.Info("Marshaling IP allocations to JSON", "Allocations", allocations)
     data, err := json.Marshal(allocationsToList())
     if err != nil {
         log.Log.Error(err, "Failed to marshal IP allocations data")
@@ -224,17 +219,15 @@ func saveAllocations() error {
         "allocations": string(data),
     }
 
-    log.Log.Info("ConfigMap data prepared for saving", "ConfigMapData", cm.Data)
+    log.Log.Info("Prepared ConfigMap data for saving", "ConfigMapData", cm.Data)
 
-    log.Log.Info("Attempting to save IP allocations to ConfigMap", "ConfigMapName", ipAllocationsConfigMapName, "Namespace", configMapNamespace)
-
-    // First, try to get the ConfigMap to determine whether we need to create or update
+    // Try to get existing ConfigMap
     existingCM := &corev1.ConfigMap{}
     err = k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, existingCM)
     if err != nil {
         if apierrors.IsNotFound(err) {
-            // ConfigMap does not exist, create it
-            log.Log.Info("IP allocations ConfigMap not found, creating new ConfigMap", "ConfigMapData", cm.Data)
+            // ConfigMap doesn't exist, create it
+            log.Log.Info("IP allocations ConfigMap not found, creating new one", "ConfigMapData", cm.Data)
             err = k8sClient.Create(ctx, cm)
             if err != nil {
                 log.Log.Error(err, "Failed to create IP allocations ConfigMap")
@@ -242,13 +235,13 @@ func saveAllocations() error {
             }
             log.Log.Info("IP allocations ConfigMap created successfully")
         } else {
-            // Failed to get the ConfigMap for an unknown reason
+            // Unexpected error while getting ConfigMap
             log.Log.Error(err, "Failed to get existing IP allocations ConfigMap")
             return err
         }
     } else {
-        // ConfigMap exists, update it
-        log.Log.Info("Existing ConfigMap found. Preparing to update", "ExistingConfigMapData", existingCM.Data)
+        // Update existing ConfigMap
+        log.Log.Info("Found existing ConfigMap, preparing to update", "ExistingConfigMapData", existingCM.Data)
 
         existingCM.Data = cm.Data
 
@@ -261,6 +254,14 @@ func saveAllocations() error {
         }
         log.Log.Info("IP allocations ConfigMap updated successfully")
     }
+
+    // Verify by reading back
+    verifyCM := &corev1.ConfigMap{}
+    if err := k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, verifyCM); err != nil {
+        log.Log.Error(err, "Failed to read back IP allocations ConfigMap after saving")
+        return err
+    }
+    log.Log.Info("Read back IP allocations ConfigMap to verify consistency", "Data", verifyCM.Data)
 
     log.Log.Info("IP allocations saved successfully")
     return nil

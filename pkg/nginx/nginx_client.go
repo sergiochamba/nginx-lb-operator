@@ -238,13 +238,13 @@ func (server *NginxServer) updateKeepalivedConfigs() error {
     log.Log.Info("Successfully wrote secondary Keepalived configuration")
 
     // Ensure main keepalived.conf includes the operator's configuration
-    log.Log.Info("Ensuring Keepalived main configuration includes the operator's configuration")
-    err = server.ensureKeepalivedIncludesOperatorConfig(primaryConfigPath)
-    if err != nil {
-        log.Log.Error(err, "Failed to ensure Keepalived includes operator configuration")
-        return err
-    }
-    log.Log.Info("Successfully ensured Keepalived configuration includes the operator's config")
+    //log.Log.Info("Ensuring Keepalived main configuration includes the operator's configuration")
+    //err = server.ensureKeepalivedIncludesOperatorConfig(primaryConfigPath)
+    //if err != nil {
+    //    log.Log.Error(err, "Failed to ensure Keepalived includes operator configuration")
+    //    return err
+    //}
+    //log.Log.Info("Successfully ensured Keepalived configuration includes the operator's config")
 
     // Reload Keepalived on the primary server
     log.Log.Info("Reloading Keepalived configuration")
