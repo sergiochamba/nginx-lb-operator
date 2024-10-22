@@ -2,6 +2,7 @@ package nginx
 
 import (
     "bytes"
+	"bufio"
     "context"
     "fmt"
     "io/ioutil"
