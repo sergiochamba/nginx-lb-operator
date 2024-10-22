@@ -5,7 +5,6 @@ import (
 	"bufio"
     "context"
     "fmt"
-	"strconv"
     "io/ioutil"
     "path/filepath"
     "sort"
@@ -419,18 +418,34 @@ func hashClusterName(name string) int {
 func getUniqueVRID() (int, error) {
     vridAllocPath := "/etc/keepalived/VRID_allocations.conf"
 
-    // Ensure the VRID allocation file exists; if not, create it
-    file, err := os.OpenFile(vridAllocPath, os.O_RDWR|os.O_CREATE, 0644)
+    // Open the VRID allocation file remotely using SSH and check if it exists
+    client, err := nginxServer.newSSHClient()
     if err != nil {
-        log.Log.Error(err, "Failed to open or create VRID allocations file")
+        log.Log.Error(err, "Failed to create SSH client for VRID allocation")
         return 0, err
     }
-    defer file.Close()
+    defer client.Close()
 
+    // Use `cat` to check if the VRID file exists, if not, create it
+    checkCmd := fmt.Sprintf("sudo touch %s && cat %s", vridAllocPath, vridAllocPath)
+    session, err := client.NewSession()
+    if err != nil {
+        log.Log.Error(err, "Failed to create SSH session")
+        return 0, err
+    }
+    defer session.Close()
+
+    var outputBuf bytes.Buffer
+    session.Stdout = &outputBuf
+    err = session.Run(checkCmd)
+    if err != nil {
+        log.Log.Error(err, "Failed to check or create VRID allocations file")
+        return 0, err
+    }
+
+    // Parse existing VRIDs from the remote file output
     allocatedVRIDs := map[int]bool{}
-    scanner := bufio.NewScanner(file)
-
-    // Read all the existing VRIDs from the file
+    scanner := bufio.NewScanner(strings.NewReader(outputBuf.String()))
     for scanner.Scan() {
         line := strings.TrimSpace(scanner.Text())
         if line == "" || strings.HasPrefix(line, "#") {
@@ -439,17 +454,17 @@ func getUniqueVRID() (int, error) {
         var vrid int
         _, err := fmt.Sscanf(line, "vrid %d", &vrid)
         if err != nil {
-            log.Log.Error(err, "Failed to parse VRID from file")
+            log.Log.Error(err, "Failed to parse VRID from file", "Line", line)
             continue
         }
         allocatedVRIDs[vrid] = true
     }
     if err := scanner.Err(); err != nil {
-        log.Log.Error(err, "Failed to read VRID allocations file")
+        log.Log.Error(err, "Failed to read VRID allocations")
         return 0, err
     }
 
-    // Find an unused VRID within the valid range [1, 255]
+    // Find an unused VRID in the range [1, 255]
     var newVRID int
     for i := 1; i <= 255; i++ {
         if !allocatedVRIDs[i] {
@@ -461,16 +476,18 @@ func getUniqueVRID() (int, error) {
         return 0, fmt.Errorf("no available VRIDs found")
     }
 
-    // Write the new VRID to the allocation file
-    writer := bufio.NewWriter(file)
-    _, err = writer.WriteString(fmt.Sprintf("vrid %d\n", newVRID))
+    // Append the new VRID to the file
+    appendCmd := fmt.Sprintf("echo 'vrid %d' | sudo tee -a %s > /dev/null", newVRID, vridAllocPath)
+    appendSession, err := client.NewSession()
     if err != nil {
-        log.Log.Error(err, "Failed to write new VRID to allocations file")
+        log.Log.Error(err, "Failed to create SSH session for appending VRID")
         return 0, err
     }
-    err = writer.Flush()
+    defer appendSession.Close()
+
+    err = appendSession.Run(appendCmd)
     if err != nil {
-        log.Log.Error(err, "Failed to flush writer when saving VRID allocation")
+        log.Log.Error(err, "Failed to append new VRID to allocations file")
         return 0, err
     }
 
