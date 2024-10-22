@@ -278,6 +278,19 @@ func (server *NginxServer) generateKeepalivedConfig(group1VIPs, group2VIPs []str
         return "", err
     }
 
+    // Use new function to get unique VRIDs
+    virtualRouterID1, err := getUniqueVRID()
+    if err != nil {
+        log.Log.Error(err, "Failed to allocate VirtualRouterID1")
+        return "", err
+    }
+
+    virtualRouterID2, err := getUniqueVRID()
+    if err != nil {
+        log.Log.Error(err, "Failed to allocate VirtualRouterID2")
+        return "", err
+    }
+
     data := struct {
         ClusterName      string
         Interface        string
@@ -289,8 +302,8 @@ func (server *NginxServer) generateKeepalivedConfig(group1VIPs, group2VIPs []str
     }{
         ClusterName:      clusterName,
         Interface:        server.NetworkInterface,
-        VirtualRouterID1: 100 + hashClusterName(clusterName+"GROUP1"),
-        VirtualRouterID2: 100 + hashClusterName(clusterName+"GROUP2"),
+        VirtualRouterID1: virtualRouterID1,
+        VirtualRouterID2: virtualRouterID2,
         AuthPass:         "StrongPassword", // Should be securely managed
         Group1VIPs:       group1VIPs,
         Group2VIPs:       group2VIPs,
@@ -399,4 +412,58 @@ func hashClusterName(name string) int {
         hash += int(c)
     }
     return hash % 255
+}
+
+func getUniqueVRID() (int, error) {
+    vridAllocPath := "/etc/keepalived/VRID_allocations.conf"
+
+    // Open the VRID allocation file or create if it doesn't exist
+    file, err := os.OpenFile(vridAllocPath, os.O_RDWR|os.O_CREATE, 0644)
+    if err != nil {
+        log.Log.Error(err, "Failed to open VRID allocations file")
+        return 0, err
+    }
+    defer file.Close()
+
+    allocatedVRIDs := map[int]bool{}
+    scanner := bufio.NewScanner(file)
+    for scanner.Scan() {
+        line := strings.TrimSpace(scanner.Text())
+        if line == "" || strings.HasPrefix(line, "#") {
+            continue
+        }
+        var vrid int
+        _, err := fmt.Sscanf(line, "vrid %d", &vrid)
+        if err != nil {
+            log.Log.Error(err, "Failed to parse VRID from file")
+            continue
+        }
+        allocatedVRIDs[vrid] = true
+    }
+    if err := scanner.Err(); err != nil {
+        log.Log.Error(err, "Failed to read VRID allocations file")
+        return 0, err
+    }
+
+    // Find an unused VRID
+    var newVRID int
+    for i := 1; i <= 255; i++ {
+        if !allocatedVRIDs[i] {
+            newVRID = i
+            break
+        }
+    }
+    if newVRID == 0 {
+        return 0, fmt.Errorf("no available VRIDs found")
+    }
+
+    // Write the new VRID to the allocation file
+    _, err = file.WriteString(fmt.Sprintf("vrid %d\n", newVRID))
+    if err != nil {
+        log.Log.Error(err, "Failed to write new VRID to allocations file")
+        return 0, err
+    }
+
+    log.Log.Info("Successfully allocated new VRID", "VRID", newVRID)
+    return newVRID, nil
 }

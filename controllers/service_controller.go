@@ -151,10 +151,6 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
                     logger.Error(err, "Failed to release IP allocation during rollback")
                 }
             }
-            // Rollback Keepalived configuration if updated but the rest failed
-            if err := nginx.UpdateKeepalivedConfigs(); err != nil {
-                logger.Error(err, "Failed to rollback Keepalived configurations during rollback")
-            }
         }
     }()
 
@@ -196,6 +192,9 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
         return err
     }
     logger.Info("Keepalived configurations updated successfully")
+
+    // Wait for Keepalived to stabilize the new IP
+    time.Sleep(5 * time.Second) // Add a fixed delay to allow the IP to be applied
 
     // Configure NGINX AFTER Keepalived is updated
     logger.Info("Configuring NGINX for service", "Service", svc.Name)
