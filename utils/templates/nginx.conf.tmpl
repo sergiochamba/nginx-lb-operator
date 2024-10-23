@@ -1,0 +1,10 @@
+upstream {{ .UpstreamName }} {
+    {{- range .Endpoints }}
+    server {{ . }}:{{ $.NodePort }};
+    {{- end }}
+}
+
+server {
+    listen {{ .IP }}:{{ .ServicePort }};
+    proxy_pass {{ .UpstreamName }};
+}

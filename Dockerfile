@@ -5,11 +5,10 @@ WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code and templates
+# Copy source code
 COPY main.go ./
 COPY controllers/ controllers/
 COPY utils/ utils/
-COPY templates/ templates/
 
 # Build the Go binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager main.go

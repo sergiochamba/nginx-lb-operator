@@ -3,6 +3,7 @@ package utils
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"os"
 	"sort"

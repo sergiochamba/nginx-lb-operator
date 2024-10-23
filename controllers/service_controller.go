@@ -52,7 +52,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Handle finalizer for cleanup
-	finalizerName := "nginx-lb-operator.finalizers"
+	finalizerName := "sergiochamba.com/nginx-lb-operator-finalizer"
 
 	if service.ObjectMeta.DeletionTimestamp.IsZero() {
 		// The object is not being deleted

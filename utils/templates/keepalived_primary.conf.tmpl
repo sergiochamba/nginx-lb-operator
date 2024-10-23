@@ -1,0 +1,41 @@
+! Keepalived configuration for cluster {{ .ClusterName }} - Primary Server
+
+vrrp_instance VI_{{ .ClusterName }}_GROUP1 {
+    state MASTER
+    interface {{ .Interface }}
+    virtual_router_id {{ .VirtualRouterID1 }}
+    priority 101
+    advert_int 1
+    dont_track_primary
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ .AuthPass }}
+    }
+
+    virtual_ipaddress {
+        {{- range .Group1VIPs }}
+        {{ . }}
+        {{- end }}
+    }
+}
+
+vrrp_instance VI_{{ .ClusterName }}_GROUP2 {
+    state BACKUP
+    interface {{ .Interface }}
+    virtual_router_id {{ .VirtualRouterID2 }}
+    priority 100
+    advert_int 1
+    dont_track_primary
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ .AuthPass }}
+    }
+
+    virtual_ipaddress {
+        {{- range .Group2VIPs }}
+        {{ . }}
+        {{- end }}
+    }
+}
