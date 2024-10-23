@@ -157,13 +157,13 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
     allocated = true
     logger.Info("Allocated IP and ports", "IP", allocation.IP, "Ports", allocation.Ports)
 
-	// Allocate or retrieve the VRID
-	vridConfigMapName := fmt.Sprintf("%s-%s-vrid-allocations", svc.Namespace, svc.Name)
-	vrid1, vrid2, err := nginx.GetOrAllocateVRIDs(vridConfigMapName)
-	if err != nil {
-		return fmt.Errorf("failed to get or allocate VRIDs: %w", err)
-	}
-	logger.Info("Using VRIDs for service", "VRID1", vrid1, "VRID2", vrid2)
+    // Allocate or retrieve the VRID
+    vridConfigMapName := fmt.Sprintf("%s-%s-vrid-allocations", svc.Namespace, svc.Name)
+    vrid, err := nginx.GetOrAllocateVRIDs(vridConfigMapName)
+    if err != nil {
+        return fmt.Errorf("failed to get or allocate VRID: %w", err)
+    }
+    logger.Info("Using VRID for service", "VRID", vrid)
 
     // Fetch endpoints
     endpoints := &corev1.Endpoints{}
