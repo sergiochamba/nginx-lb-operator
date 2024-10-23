@@ -4,7 +4,7 @@ import (
     "bytes"
     "context"
     "fmt"
-	"errors"
+	"k8s.io/apimachinery/pkg/api/errors"
     "io/ioutil"
     "path/filepath"
     "sort"
