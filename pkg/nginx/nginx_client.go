@@ -2,9 +2,9 @@ package nginx
 
 import (
     "bytes"
-	"bufio"
     "context"
     "fmt"
+	"errors"
     "io/ioutil"
     "path/filepath"
     "sort"

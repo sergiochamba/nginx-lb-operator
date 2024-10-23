@@ -14,6 +14,7 @@ import (
     "k8s.io/apimachinery/pkg/types"
     "sigs.k8s.io/controller-runtime/pkg/client"
     "sigs.k8s.io/controller-runtime/pkg/log"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Allocation struct {
@@ -190,7 +191,7 @@ func saveAllocations() error {
 
     ctx := context.Background()
     cm := &corev1.ConfigMap{
-        ObjectMeta: types.NamespacedName{
+        ObjectMeta: metav1.ObjectMeta{
             Name:      ipAllocationsConfigMapName,
             Namespace: configMapNamespace,
         },
