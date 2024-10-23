@@ -48,15 +48,13 @@ func Init(client client.Client) error {
     log.Log.Info("Initializing IPAM module")
 
     // Load IP pool from ConfigMap
-    err := loadIPPool()
-    if err != nil {
+    if err := loadIPPool(); err != nil {
         log.Log.Error(err, "Failed to load IP pool from ConfigMap")
         return err
     }
 
     // Load allocations from ConfigMap
-    err = loadAllocations()
-    if err != nil {
+    if err := loadAllocations(); err != nil {
         log.Log.Error(err, "Failed to load allocations from ConfigMap")
         return err
     }
@@ -69,20 +67,19 @@ func loadIPPool() error {
     ctx := context.Background()
     cm := &corev1.ConfigMap{}
     log.Log.Info("Loading IP pool from ConfigMap", "ConfigMapName", ipPoolConfigMapName, "Namespace", configMapNamespace)
-    err := k8sClient.Get(ctx, types.NamespacedName{Name: ipPoolConfigMapName, Namespace: configMapNamespace}, cm)
-    if err != nil {
+    
+    if err := k8sClient.Get(ctx, types.NamespacedName{Name: ipPoolConfigMapName, Namespace: configMapNamespace}, cm); err != nil {
         log.Log.Error(err, "Failed to get IP pool ConfigMap")
         return err
     }
 
     ipPoolData, exists := cm.Data["ip_pool"]
     if !exists {
-        log.Log.Error(nil, "ip_pool not found in ConfigMap")
         return errors.New("ip_pool not found in ConfigMap")
     }
 
-    ipPool, err = parseIPPool(ipPoolData)
-    if err != nil {
+    var err error
+    if ipPool, err = parseIPPool(ipPoolData); err != nil {
         log.Log.Error(err, "Failed to parse IP pool data")
         return err
     }
@@ -100,19 +97,14 @@ func parseIPPool(data string) ([]string, error) {
             continue
         }
         if strings.Contains(ipRange, "-") {
-            // It's a range
             rangeIps, err := expandIPRange(ipRange)
             if err != nil {
-                log.Log.Error(err, "Failed to expand IP range", "IPRange", ipRange)
-                return nil, err
+                return nil, fmt.Errorf("failed to expand IP range %s: %w", ipRange, err)
             }
             ips = append(ips, rangeIps...)
         } else {
-            // It's a single IP
             if net.ParseIP(ipRange) == nil {
-                err := fmt.Errorf("invalid IP address: %s", ipRange)
-                log.Log.Error(err, "Invalid IP address found in IP pool data")
-                return nil, err
+                return nil, fmt.Errorf("invalid IP address: %s", ipRange)
             }
             ips = append(ips, ipRange)
         }
@@ -123,16 +115,12 @@ func parseIPPool(data string) ([]string, error) {
 func expandIPRange(ipRange string) ([]string, error) {
     parts := strings.Split(ipRange, "-")
     if len(parts) != 2 {
-        err := fmt.Errorf("invalid IP range format: %s", ipRange)
-        log.Log.Error(err, "Failed to parse IP range")
-        return nil, err
+        return nil, fmt.Errorf("invalid IP range format: %s", ipRange)
     }
     startIP := net.ParseIP(strings.TrimSpace(parts[0]))
     endIP := net.ParseIP(strings.TrimSpace(parts[1]))
     if startIP == nil || endIP == nil {
-        err := fmt.Errorf("invalid IP in range: %s", ipRange)
-        log.Log.Error(err, "Invalid IP in range")
-        return nil, err
+        return nil, fmt.Errorf("invalid IP in range: %s", ipRange)
     }
     return generateIPRange(startIP, endIP)
 }
@@ -161,14 +149,13 @@ func loadAllocations() error {
     ctx := context.Background()
     cm := &corev1.ConfigMap{}
     log.Log.Info("Loading IP allocations from ConfigMap", "ConfigMapName", ipAllocationsConfigMapName, "Namespace", configMapNamespace)
-    err := k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, cm)
-    if err != nil {
+    
+    if err := k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, cm); err != nil {
         if apierrors.IsNotFound(err) {
             log.Log.Info("IP allocations ConfigMap not found, assuming no allocations exist yet")
             return nil
         }
-        log.Log.Error(err, "Failed to get IP allocations ConfigMap")
-        return err
+        return fmt.Errorf("failed to get IP allocations ConfigMap: %w", err)
     }
 
     data, exists := cm.Data["allocations"]
@@ -178,10 +165,8 @@ func loadAllocations() error {
     }
 
     var storedAllocations []*Allocation
-    err = json.Unmarshal([]byte(data), &storedAllocations)
-    if err != nil {
-        log.Log.Error(err, "Failed to unmarshal IP allocations data")
-        return err
+    if err := json.Unmarshal([]byte(data), &storedAllocations); err != nil {
+        return fmt.Errorf("failed to unmarshal IP allocations data: %w", err)
     }
 
     for _, alloc := range storedAllocations {
@@ -200,71 +185,42 @@ func loadAllocations() error {
 }
 
 func saveAllocations() error {
-    ctx := context.Background()
-    cm := &corev1.ConfigMap{}
-    cm.Name = ipAllocationsConfigMapName
-    cm.Namespace = configMapNamespace
+    allocationMutex.Lock()
+    defer allocationMutex.Unlock()
 
-    log.Log.Info("Raw IP allocations data before marshaling", "Allocations", allocations)
+    ctx := context.Background()
+    cm := &corev1.ConfigMap{
+        ObjectMeta: types.NamespacedName{
+            Name:      ipAllocationsConfigMapName,
+            Namespace: configMapNamespace,
+        },
+    }
 
     // Marshal allocations to JSON
     data, err := json.Marshal(allocationsToList())
     if err != nil {
-        log.Log.Error(err, "Failed to marshal IP allocations data")
-        return err
+        return fmt.Errorf("failed to marshal IP allocations data: %w", err)
     }
-    log.Log.Info("Successfully marshaled IP allocations to JSON", "MarshaledData", string(data))
 
     cm.Data = map[string]string{
         "allocations": string(data),
     }
 
-    log.Log.Info("Prepared ConfigMap data for saving", "ConfigMapData", cm.Data)
-
     // Try to get existing ConfigMap
     existingCM := &corev1.ConfigMap{}
     err = k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, existingCM)
-    if err != nil {
-        if apierrors.IsNotFound(err) {
-            // ConfigMap doesn't exist, create it
-            log.Log.Info("IP allocations ConfigMap not found, creating new one", "ConfigMapData", cm.Data)
-            err = k8sClient.Create(ctx, cm)
-            if err != nil {
-                log.Log.Error(err, "Failed to create IP allocations ConfigMap")
-                return err
-            }
-            log.Log.Info("IP allocations ConfigMap created successfully")
-        } else {
-            // Unexpected error while getting ConfigMap
-            log.Log.Error(err, "Failed to get existing IP allocations ConfigMap")
-            return err
-        }
-    } else {
-        // Update existing ConfigMap
-        log.Log.Info("Found existing ConfigMap, preparing to update", "ExistingConfigMapData", existingCM.Data)
-
-        existingCM.Data = cm.Data
-
-        log.Log.Info("Updating existing IP allocations ConfigMap with new data", "NewConfigMapData", existingCM.Data)
-
-        err = k8sClient.Update(ctx, existingCM)
-        if err != nil {
-            log.Log.Error(err, "Failed to update IP allocations ConfigMap")
-            return err
-        }
-        log.Log.Info("IP allocations ConfigMap updated successfully")
+    if err != nil && !apierrors.IsNotFound(err) {
+        return fmt.Errorf("failed to get existing IP allocations ConfigMap: %w", err)
     }
 
-    // Verify by reading back
-    verifyCM := &corev1.ConfigMap{}
-    if err := k8sClient.Get(ctx, types.NamespacedName{Name: ipAllocationsConfigMapName, Namespace: configMapNamespace}, verifyCM); err != nil {
-        log.Log.Error(err, "Failed to read back IP allocations ConfigMap after saving")
-        return err
+    if apierrors.IsNotFound(err) {
+        // ConfigMap doesn't exist, create it
+        return k8sClient.Create(ctx, cm)
     }
-    log.Log.Info("Read back IP allocations ConfigMap to verify consistency", "Data", verifyCM.Data)
 
-    log.Log.Info("IP allocations saved successfully")
-    return nil
+    // Update existing ConfigMap
+    existingCM.Data = cm.Data
+    return k8sClient.Update(ctx, existingCM)
 }
 
 func allocationsToList() []*Allocation {
@@ -280,18 +236,12 @@ func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, 
     defer allocationMutex.Unlock()
 
     key := fmt.Sprintf("%s/%s", namespace, service)
-    log.Log.Info("Allocating IP and ports", "Namespace", namespace, "Service", service, "Ports", ports)
-
-    // Check if allocation already exists
     if alloc, exists := allocations[key]; exists {
-        log.Log.Info("Allocation already exists", "Namespace", namespace, "Service", service, "IP", alloc.IP)
         return alloc, nil
     }
 
     // Find an IP with available ports
     for _, ip := range ipPool {
-        log.Log.Info("Checking IP for availability", "IP", ip)
-
         portUsage, exists := ipPortUsage[ip]
         if !exists {
             portUsage = make(map[int32]string)
@@ -300,21 +250,17 @@ func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, 
 
         conflict := false
         for _, port := range ports {
-            log.Log.Info("Checking port for conflict", "IP", ip, "Port", port)
             if _, inUse := portUsage[port]; inUse {
-                log.Log.Info("Port conflict detected", "IP", ip, "Port", port)
                 conflict = true
                 break
             }
         }
 
         if conflict {
-            log.Log.Info("IP is in conflict, skipping", "IP", ip)
             continue
         }
 
         // Allocate IP and ports
-        log.Log.Info("Allocating IP and ports", "IP", ip, "Ports", ports)
         for _, port := range ports {
             portUsage[port] = key
         }
@@ -326,19 +272,13 @@ func AllocateIPAndPorts(namespace, service string, ports []int32) (*Allocation, 
         }
         allocations[key] = allocation
 
-        // Save allocations to ConfigMap
-        log.Log.Info("Saving new allocation", "Namespace", namespace, "Service", service, "IP", ip, "Ports", ports)
-        err := saveAllocations()
-        if err != nil {
-            log.Log.Error(err, "Failed to save IP allocations after allocation")
+        if err := saveAllocations(); err != nil {
             return nil, err
         }
 
-        log.Log.Info("IP and ports allocated successfully", "Namespace", namespace, "Service", service, "IP", ip, "Ports", ports)
         return allocation, nil
     }
 
-    log.Log.Error(nil, "No available IPs found that can accommodate the requested ports", "Namespace", namespace, "Service", service)
     return nil, errors.New("no available IPs with required ports")
 }
 
@@ -347,11 +287,8 @@ func ReleaseAllocation(namespace, service string) error {
     defer allocationMutex.Unlock()
 
     key := fmt.Sprintf("%s/%s", namespace, service)
-    log.Log.Info("Releasing IP allocation", "Namespace", namespace, "Service", service)
-
     alloc, exists := allocations[key]
     if !exists {
-        log.Log.Info("No allocation found to release", "Namespace", namespace, "Service", service)
         return nil
     }
 
@@ -366,26 +303,16 @@ func ReleaseAllocation(namespace, service string) error {
 
     delete(allocations, key)
 
-    // Save allocations to ConfigMap
-    err := saveAllocations()
-    if err != nil {
-        log.Log.Error(err, "Failed to save IP allocations after release")
-        return err
-    }
-
-    log.Log.Info("IP allocation released successfully", "Namespace", namespace, "Service", service)
-    return nil
+    return saveAllocations()
 }
 
 func GetAllocatedIPs() (map[string]bool, error) {
     allocationMutex.Lock()
     defer allocationMutex.Unlock()
 
-    log.Log.Info("Retrieving all allocated IPs")
     ips := make(map[string]bool)
     for _, alloc := range allocations {
         ips[alloc.IP] = true
     }
-    log.Log.Info("Allocated IPs retrieved", "IPs", ips)
     return ips, nil
 }

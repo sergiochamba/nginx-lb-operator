@@ -30,9 +30,13 @@ type NginxServer struct {
 var (
     nginxServer *NginxServer
     clusterName string
+    k8sClient   client.Client
 )
 
-func Init(k8sClient client.Client) error {
+func Init(k8sClientInstance client.Client) error {
+    // Store k8sClient globally for VRID operations
+    k8sClient = k8sClientInstance
+    
     // Load credentials from Kubernetes Secret
     ctx := context.Background()
     secret := &corev1.Secret{}
@@ -94,12 +98,7 @@ func ConfigureService(allocation *ipam.Allocation, servicePort int32, endpointIP
     }
 
     // Reload NGINX
-    err = nginxServer.reloadNginx()
-    if err != nil {
-        return err
-    }
-
-    return nil
+    return nginxServer.reloadNginx()
 }
 
 func RemoveServiceConfiguration(namespace, service string) error {
@@ -152,27 +151,7 @@ func (server *NginxServer) transferConfigFile(allocation *ipam.Allocation, confi
     filename := fmt.Sprintf("vip-%s-%s-%s.conf", clusterName, allocation.Namespace, allocation.Service)
     remotePath := filepath.Join("/etc/nginx/conf.d/", filename)
 
-    client, err := server.newSSHClient()
-    if err != nil {
-        return err
-    }
-    defer client.Close()
-
-    session, err := client.NewSession()
-    if err != nil {
-        return err
-    }
-    defer session.Close()
-
-    cmd := fmt.Sprintf("sudo tee %s > /dev/null", remotePath)
-    session.Stdin = strings.NewReader(configContent)
-
-    err = session.Run(cmd)
-    if err != nil {
-        return err
-    }
-
-    return nil
+    return server.writeRemoteFile(remotePath, configContent)
 }
 
 func (server *NginxServer) reloadNginx() error {
@@ -191,7 +170,7 @@ func (server *NginxServer) updateKeepalivedConfigs() error {
     log.Log.Info("Allocated IPs retrieved for Keepalived configuration", "AllocatedIPs", allocatedIPs)
 
     // Convert map to slice and sort
-    vipList := []string{}
+    vipList := make([]string, 0, len(allocatedIPs))
     for ip := range allocatedIPs {
         vipList = append(vipList, ip)
     }
@@ -218,7 +197,7 @@ func (server *NginxServer) updateKeepalivedConfigs() error {
     }
     log.Log.Info("Successfully generated Keepalived configuration for secondary group")
 
-    // Write primary configuration to the server
+    // Write primary and secondary configurations to the server
     primaryConfigPath := fmt.Sprintf("/etc/keepalived/%s_keepalived.conf", clusterName)
     log.Log.Info("Writing primary Keepalived configuration", "Path", primaryConfigPath)
     err = server.writeRemoteFile(primaryConfigPath, primaryConfigContent)
@@ -228,7 +207,6 @@ func (server *NginxServer) updateKeepalivedConfigs() error {
     }
     log.Log.Info("Successfully wrote primary Keepalived configuration")
 
-    // Write secondary configuration to a separate file
     secondaryConfigPath := fmt.Sprintf("/etc/keepalived/%s_keepalived.conf.secondary", clusterName)
     log.Log.Info("Writing secondary Keepalived configuration", "Path", secondaryConfigPath)
     err = server.writeRemoteFile(secondaryConfigPath, secondaryConfigContent)
@@ -237,15 +215,6 @@ func (server *NginxServer) updateKeepalivedConfigs() error {
         return err
     }
     log.Log.Info("Successfully wrote secondary Keepalived configuration")
-
-    // Ensure main keepalived.conf includes the operator's configuration
-    //log.Log.Info("Ensuring Keepalived main configuration includes the operator's configuration")
-    //err = server.ensureKeepalivedIncludesOperatorConfig(primaryConfigPath)
-    //if err != nil {
-    //    log.Log.Error(err, "Failed to ensure Keepalived includes operator configuration")
-    //    return err
-    //}
-    //log.Log.Info("Successfully ensured Keepalived configuration includes the operator's config")
 
     // Reload Keepalived on the primary server
     log.Log.Info("Reloading Keepalived configuration")
@@ -267,11 +236,11 @@ func splitVIPs(vipList []string) ([]string, []string) {
 }
 
 func (server *NginxServer) generateKeepalivedConfig(group1VIPs, group2VIPs []string, isPrimary bool) (string, error) {
-    var tmplPath string
+    tmplPath := "/app/templates/"
     if isPrimary {
-        tmplPath = "/app/templates/keepalived_primary.conf.tmpl"
+        tmplPath += "keepalived_primary.conf.tmpl"
     } else {
-        tmplPath = "/app/templates/keepalived_secondary.conf.tmpl"
+        tmplPath += "keepalived_secondary.conf.tmpl"
     }
 
     tmpl, err := template.ParseFiles(tmplPath)
@@ -279,16 +248,9 @@ func (server *NginxServer) generateKeepalivedConfig(group1VIPs, group2VIPs []str
         return "", err
     }
 
-    // Use new function to get unique VRIDs
-    virtualRouterID1, err := getUniqueVRID()
+    virtualRouterID1, virtualRouterID2, err := getOrAllocateVRIDs("vrid-allocations")
     if err != nil {
-        log.Log.Error(err, "Failed to allocate VirtualRouterID1")
-        return "", err
-    }
-
-    virtualRouterID2, err := getUniqueVRID()
-    if err != nil {
-        log.Log.Error(err, "Failed to allocate VirtualRouterID2")
+        log.Log.Error(err, "Failed to get or allocate VRIDs")
         return "", err
     }
 
@@ -341,14 +303,6 @@ func (server *NginxServer) writeRemoteFile(remotePath, content string) error {
     }
 
     return nil
-}
-
-func (server *NginxServer) ensureKeepalivedIncludesOperatorConfig(operatorConfigPath string) error {
-    mainConfigPath := "/etc/keepalived/keepalived.conf"
-    includeStatement := fmt.Sprintf("include %s", operatorConfigPath)
-
-    cmd := fmt.Sprintf(`sudo grep -qF '%s' %s || echo '%s' | sudo tee -a %s`, includeStatement, mainConfigPath, includeStatement, mainConfigPath)
-    return server.executeRemoteCommand(cmd)
 }
 
 func (server *NginxServer) reloadKeepalived() error {
@@ -407,90 +361,53 @@ func (server *NginxServer) newSSHClient() (*ssh.Client, error) {
     return client, nil
 }
 
-func hashClusterName(name string) int {
-    var hash int
-    for _, c := range name {
-        hash += int(c)
+func getOrAllocateVRIDs(configMapName string) (int, int, error) {
+    ctx := context.Background()
+    cm := &corev1.ConfigMap{}
+    err := k8sClient.Get(ctx, client.ObjectKey{
+        Name:      configMapName,
+        Namespace: "nginx-lb-operator-system",
+    }, cm)
+    
+    if err != nil && !errors.IsNotFound(err) {
+        return 0, 0, err
     }
-    return hash % 255
+
+    if data, exists := cm.Data["vrid"]; exists && strings.TrimSpace(data) != "" {
+        var existingVRID1, existingVRID2 int
+        _, err := fmt.Sscanf(data, "%d,%d", &existingVRID1, &existingVRID2)
+        if err == nil {
+            return existingVRID1, existingVRID2, nil
+        }
+    }
+
+    // Allocate new VRIDs if none exist in the ConfigMap
+    allocatedVRIDs := map[int]bool{}
+    virtualRouterID1 := allocateNewVRID(allocatedVRIDs)
+    virtualRouterID2 := allocateNewVRID(allocatedVRIDs)
+
+    cm.Data = map[string]string{"vrid": fmt.Sprintf("%d,%d", virtualRouterID1, virtualRouterID2)}
+    if errors.IsNotFound(err) {
+        cm.Name = configMapName
+        cm.Namespace = "nginx-lb-operator-system"
+        err = k8sClient.Create(ctx, cm)
+    } else {
+        err = k8sClient.Update(ctx, cm)
+    }
+
+    if err != nil {
+        return 0, 0, err
+    }
+
+    return virtualRouterID1, virtualRouterID2, nil
 }
 
-func getUniqueVRID() (int, error) {
-    vridAllocPath := "/etc/keepalived/VRID_allocations.conf"
-
-    // Open the VRID allocation file remotely using SSH and check if it exists
-    client, err := nginxServer.newSSHClient()
-    if err != nil {
-        log.Log.Error(err, "Failed to create SSH client for VRID allocation")
-        return 0, err
-    }
-    defer client.Close()
-
-    // Use `cat` to check if the VRID file exists, if not, create it
-    checkCmd := fmt.Sprintf("sudo touch %s && cat %s", vridAllocPath, vridAllocPath)
-    session, err := client.NewSession()
-    if err != nil {
-        log.Log.Error(err, "Failed to create SSH session")
-        return 0, err
-    }
-    defer session.Close()
-
-    var outputBuf bytes.Buffer
-    session.Stdout = &outputBuf
-    err = session.Run(checkCmd)
-    if err != nil {
-        log.Log.Error(err, "Failed to check or create VRID allocations file")
-        return 0, err
-    }
-
-    // Parse existing VRIDs from the remote file output
-    allocatedVRIDs := map[int]bool{}
-    scanner := bufio.NewScanner(strings.NewReader(outputBuf.String()))
-    for scanner.Scan() {
-        line := strings.TrimSpace(scanner.Text())
-        if line == "" || strings.HasPrefix(line, "#") {
-            continue
-        }
-        var vrid int
-        _, err := fmt.Sscanf(line, "vrid %d", &vrid)
-        if err != nil {
-            log.Log.Error(err, "Failed to parse VRID from file", "Line", line)
-            continue
-        }
-        allocatedVRIDs[vrid] = true
-    }
-    if err := scanner.Err(); err != nil {
-        log.Log.Error(err, "Failed to read VRID allocations")
-        return 0, err
-    }
-
-    // Find an unused VRID in the range [1, 255]
-    var newVRID int
+func allocateNewVRID(allocated map[int]bool) int {
     for i := 1; i <= 255; i++ {
-        if !allocatedVRIDs[i] {
-            newVRID = i
-            break
+        if !allocated[i] {
+            allocated[i] = true
+            return i
         }
     }
-    if newVRID == 0 {
-        return 0, fmt.Errorf("no available VRIDs found")
-    }
-
-    // Append the new VRID to the file
-    appendCmd := fmt.Sprintf("echo 'vrid %d' | sudo tee -a %s > /dev/null", newVRID, vridAllocPath)
-    appendSession, err := client.NewSession()
-    if err != nil {
-        log.Log.Error(err, "Failed to create SSH session for appending VRID")
-        return 0, err
-    }
-    defer appendSession.Close()
-
-    err = appendSession.Run(appendCmd)
-    if err != nil {
-        log.Log.Error(err, "Failed to append new VRID to allocations file")
-        return 0, err
-    }
-
-    log.Log.Info("Successfully allocated new VRID", "VRID", newVRID)
-    return newVRID, nil
+    return 0
 }
