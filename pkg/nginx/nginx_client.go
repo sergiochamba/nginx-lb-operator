@@ -248,7 +248,7 @@ func (server *NginxServer) generateKeepalivedConfig(group1VIPs, group2VIPs []str
         return "", err
     }
 
-    virtualRouterID1, virtualRouterID2, err := getOrAllocateVRIDs("vrid-allocations")
+    virtualRouterID1, virtualRouterID2, err := GetOrAllocateVRIDs("vrid-allocations")
     if err != nil {
         log.Log.Error(err, "Failed to get or allocate VRIDs")
         return "", err
@@ -361,7 +361,7 @@ func (server *NginxServer) newSSHClient() (*ssh.Client, error) {
     return client, nil
 }
 
-func getOrAllocateVRIDs(configMapName string) (int, int, error) {
+func GetOrAllocateVRIDs(configMapName string) (int, int, error) {
     ctx := context.Background()
     cm := &corev1.ConfigMap{}
     err := k8sClient.Get(ctx, client.ObjectKey{
