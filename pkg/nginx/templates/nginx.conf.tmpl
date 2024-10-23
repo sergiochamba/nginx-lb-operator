@@ -1,6 +1,6 @@
 upstream {{ .ClusterName }}_{{ .Namespace }}_{{ .Service }} {
     {{- range .Endpoints }}
-    server {{ . }}:{{ $.ServicePort }};
+    server {{ . }}:{{ $.NodePort }};
     {{- end }}
 }
 

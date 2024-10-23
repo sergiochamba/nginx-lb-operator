@@ -84,9 +84,20 @@ func Init(k8sClientInstance client.Client) error {
     return nil
 }
 
-func ConfigureService(allocation *ipam.Allocation, servicePort int32, endpointIPs []string) error {
+func ConfigureService(allocation *ipam.Allocation, svc *corev1.Service, endpointIPs []string) error {
+    // Get nodePort and servicePort from the service
+    if len(svc.Spec.Ports) == 0 {
+        return fmt.Errorf("service %s/%s must have at least one port", svc.Namespace, svc.Name)
+    }
+    nodePort := svc.Spec.Ports[0].NodePort
+    servicePort := svc.Spec.Ports[0].Port
+
+    if nodePort == 0 {
+        return fmt.Errorf("nodePort is not assigned for service %s/%s", svc.Namespace, svc.Name)
+    }
+
     // Generate NGINX configuration
-    configContent, err := nginxServer.generateNginxConfig(allocation, servicePort, endpointIPs)
+    configContent, err := nginxServer.generateNginxConfig(allocation, servicePort, nodePort, endpointIPs)
     if err != nil {
         return err
     }
@@ -115,7 +126,7 @@ func UpdateKeepalivedConfigs() error {
 
 // Implement methods on NginxServer
 
-func (server *NginxServer) generateNginxConfig(allocation *ipam.Allocation, servicePort int32, endpoints []string) (string, error) {
+func (server *NginxServer) generateNginxConfig(allocation *ipam.Allocation, servicePort, nodePort int32, endpoints []string) (string, error) {
     tmplPath := "/app/templates/nginx.conf.tmpl"
     tmpl, err := template.ParseFiles(tmplPath)
     if err != nil {
@@ -128,6 +139,7 @@ func (server *NginxServer) generateNginxConfig(allocation *ipam.Allocation, serv
         Service     string
         IP          string
         ServicePort int32
+        NodePort    int32
         Endpoints   []string
     }{
         ClusterName: clusterName,
@@ -135,6 +147,7 @@ func (server *NginxServer) generateNginxConfig(allocation *ipam.Allocation, serv
         Service:     allocation.Service,
         IP:          allocation.IP,
         ServicePort: servicePort,
+        NodePort:    nodePort,
         Endpoints:   endpoints,
     }
 
