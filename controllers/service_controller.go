@@ -124,11 +124,16 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Service) error {
     logger := log.FromContext(ctx)
 
-    // Extract service port
+    // Extract service port and nodePort
     if len(svc.Spec.Ports) != 1 {
         return fmt.Errorf("service %s/%s must have exactly one port", svc.Namespace, svc.Name)
     }
     servicePort := svc.Spec.Ports[0].Port
+    nodePort := svc.Spec.Ports[0].NodePort
+
+    if nodePort == 0 {
+        return fmt.Errorf("nodePort is not assigned for service %s/%s", svc.Namespace, svc.Name)
+    }
 
     // Begin transaction-like behavior
     allocated := false
@@ -188,7 +193,7 @@ func (r *ServiceReconciler) handleService(ctx context.Context, svc *corev1.Servi
 
     // Configure NGINX AFTER Keepalived is updated
     logger.Info("Configuring NGINX for service", "Service", svc.Name)
-    if err = nginx.ConfigureService(allocation, servicePort, nodeIPs); err != nil {
+    if err = nginx.ConfigureService(allocation, svc, nodeIPs); err != nil {
         return fmt.Errorf("failed to configure NGINX: %w", err)
     }
     configApplied = true
