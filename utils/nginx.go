@@ -18,12 +18,12 @@ var nginxTemplate string
 
 // ConfigureNGINX generates and updates the NGINX configuration for the service.
 func ConfigureNGINX(ctx context.Context, c client.Client, service *corev1.Service, ip string) error {
-	endpoints, err := GetServiceEndpoints(ctx, c, service)
+	nodeIPs, err := GetServiceNodeIPs(ctx, c, service)
 	if err != nil {
-		return fmt.Errorf("failed to get endpoints for service %s/%s: %w", service.Namespace, service.Name, err)
+		return fmt.Errorf("failed to get node IPs for service %s/%s: %w", service.Namespace, service.Name, err)
 	}
 
-	nginxConfig, err := GenerateNGINXConfig(service, endpoints, ip)
+	nginxConfig, err := GenerateNGINXConfig(service, nodeIPs, ip)
 	if err != nil {
 		return err
 	}
@@ -43,7 +43,7 @@ func ConfigureNGINX(ctx context.Context, c client.Client, service *corev1.Servic
 }
 
 // GenerateNGINXConfig creates the NGINX configuration content from the template.
-func GenerateNGINXConfig(service *corev1.Service, endpoints []string, ip string) (string, error) {
+func GenerateNGINXConfig(service *corev1.Service, nodeIPs []string, ip string) (string, error) {
 	tmpl, err := template.New("nginx").Parse(nginxTemplate)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse NGINX template: %w", err)
@@ -57,13 +57,13 @@ func GenerateNGINXConfig(service *corev1.Service, endpoints []string, ip string)
 
 	data := struct {
 		UpstreamName string
-		Endpoints    []string
+		NodeIPs      []string
 		NodePort     int32
 		IP           string
 		ServicePort  int32
 	}{
 		UpstreamName: upstreamName,
-		Endpoints:    endpoints,
+		NodeIPs:      nodeIPs,
 		NodePort:     nodePort,
 		IP:           ip,
 		ServicePort:  servicePort,
