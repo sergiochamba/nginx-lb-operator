@@ -1,5 +1,5 @@
 upstream {{ .UpstreamName }} {
-    {{- range .Endpoints }}
+    {{- range .NodeIPs }}
     server {{ . }}:{{ $.NodePort }};
     {{- end }}
 }
