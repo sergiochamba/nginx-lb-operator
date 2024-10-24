@@ -10,8 +10,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/sergiochamba/nginx-lb-operator/utils"
 )
@@ -25,10 +29,53 @@ type ServiceReconciler struct {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Service{}).
-		Owns(&corev1.Endpoints{}). // Watch the Endpoints resource
+		Watches(
+			&corev1.Endpoints{},
+			&handler.EnqueueRequestForObject{},
+			builder.WithPredicates(predicate.Funcs{
+				// Log and filter create events for Endpoints
+				CreateFunc: func(e event.CreateEvent) bool {
+					return r.isLoadBalancerService(e.Object)
+				},
+				// Log and filter delete events for Endpoints
+				DeleteFunc: func(e event.DeleteEvent) bool {
+					return r.isLoadBalancerService(e.Object)
+				},
+				// Log and filter update events for Endpoints
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return r.isLoadBalancerService(e.ObjectNew)
+				},
+			}),
+		).
 		Complete(r)
+}
+
+// Define the helper method for the ServiceReconciler struct
+func (r *ServiceReconciler) isLoadBalancerService(endpoints client.Object) bool {
+	ctx := context.Background()
+
+	// Extract the namespace and name of the associated Service from the Endpoints
+	ep := endpoints.(*corev1.Endpoints)
+	serviceName := ep.Name
+	namespace := ep.Namespace
+
+	// Fetch the associated Service object
+	svc := &corev1.Service{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Name: serviceName, Namespace: namespace}, svc); err != nil {
+		ctrl.Log.Error(err, "unable to fetch associated Service for Endpoints", "endpoints", serviceName)
+		return false
+	}
+
+	// Check if the Service is of type LoadBalancer
+	if svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
+		ctrl.Log.Info("LoadBalancer Service Update detected", "service", serviceName, "namespace", namespace)
+		return true
+	}
+
+	return false
 }
 
 // Reconcile handles the reconciliation of the Service resource.
