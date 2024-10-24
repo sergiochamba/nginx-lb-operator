@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"strings"
 
-	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 	corev1 "k8s.io/api/core/v1"
@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// CopyFileToNGINXServer copies a file to the NGINX server via SFTP.
+// CopyFileToNGINXServer copies a file directly to the NGINX server via SSH and writes it using sudo.
 func CopyFileToNGINXServer(ctx context.Context, c client.Client, content, remotePath string) error {
 	clientConfig, err := GetSSHClientConfig(ctx, c)
 	if err != nil {
@@ -27,26 +27,26 @@ func CopyFileToNGINXServer(ctx context.Context, c client.Client, content, remote
 	}
 	defer client.Close()
 
-	sftpClient, err := sftp.NewClient(client)
+	session, err := client.NewSession()
 	if err != nil {
-		return fmt.Errorf("failed to create SFTP client: %w", err)
+		return fmt.Errorf("failed to create SSH session: %w", err)
 	}
-	defer sftpClient.Close()
+	defer session.Close()
 
-	remoteFile, err := sftpClient.Create(remotePath)
-	if err != nil {
-		return fmt.Errorf("failed to create remote file '%s': %w", remotePath, err)
-	}
-	defer remoteFile.Close()
+	// Escape the content for use in the command
+	escapedContent := strings.ReplaceAll(content, "'", "'\\''")
 
-	if _, err := remoteFile.Write([]byte(content)); err != nil {
-		return fmt.Errorf("failed to write to remote file '%s': %w", remotePath, err)
+	// Command to echo the content and write it to the target file using sudo
+	command := fmt.Sprintf("echo '%s' | sudo tee %s", escapedContent, remotePath)
+
+	if err := session.Run(command); err != nil {
+		return fmt.Errorf("failed to write file to '%s': %w", remotePath, err)
 	}
 
 	return nil
 }
 
-// RemoveFileFromNGINXServer removes a file from the NGINX server via SFTP.
+// RemoveFileFromNGINXServer removes a file directly from the NGINX server via SSH using sudo.
 func RemoveFileFromNGINXServer(ctx context.Context, c client.Client, remotePath string) error {
 	clientConfig, err := GetSSHClientConfig(ctx, c)
 	if err != nil {
@@ -59,14 +59,17 @@ func RemoveFileFromNGINXServer(ctx context.Context, c client.Client, remotePath 
 	}
 	defer client.Close()
 
-	sftpClient, err := sftp.NewClient(client)
+	session, err := client.NewSession()
 	if err != nil {
-		return fmt.Errorf("failed to create SFTP client: %w", err)
+		return fmt.Errorf("failed to create SSH session: %w", err)
 	}
-	defer sftpClient.Close()
+	defer session.Close()
 
-	if err := sftpClient.Remove(remotePath); err != nil {
-		return fmt.Errorf("failed to remove remote file '%s': %w", remotePath, err)
+	// Command to remove the file using sudo
+	command := fmt.Sprintf("sudo rm %s", remotePath)
+
+	if err := session.Run(command); err != nil {
+		return fmt.Errorf("failed to remove file '%s': %w", remotePath, err)
 	}
 
 	return nil
@@ -91,6 +94,7 @@ func ExecuteSSHCommand(ctx context.Context, c client.Client, command string) err
 	}
 	defer session.Close()
 
+	// Run the command
 	if err := session.Run(command); err != nil {
 		return fmt.Errorf("failed to execute command '%s': %w", command, err)
 	}

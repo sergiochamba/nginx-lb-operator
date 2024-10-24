@@ -122,7 +122,7 @@ func (r *ServiceReconciler) reconcileService(ctx context.Context, service *corev
 	}
 
 	// Get or Allocate VRIDs
-	vrid1, vrid2, err := utils.GetOrAllocateVRIDs(ctx, r.Client) // Updated function call
+	vrid1, vrid2, err := utils.GetOrAllocateVRIDs(ctx, r.Client)
 	if err != nil {
 		log.Error(err, "Failed to retrieve VRIDs")
 		r.Recorder.Event(service, corev1.EventTypeWarning, "VRIDError", "Failed to retrieve VRIDs")
@@ -150,6 +150,22 @@ func (r *ServiceReconciler) reconcileService(ctx context.Context, service *corev
 	}
 	log.Info("Configured NGINX for service", "service", svcKey)
 	r.Recorder.Event(service, corev1.EventTypeNormal, "NGINXConfigured", "NGINX configured successfully")
+
+	// Update the Service status with the allocated LoadBalancer IP
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{
+		{
+			IP: ip, // The IP you've allocated for the service
+		},
+	}
+
+	// Update the service status in the cluster
+	if err := r.Status().Update(ctx, service); err != nil {
+		log.Error(err, "Failed to update service status with LoadBalancer IP", "service", svcKey)
+		r.Recorder.Event(service, corev1.EventTypeWarning, "StatusUpdateFailed", "Failed to update service status")
+		return err
+	}
+	log.Info("Updated service status with LoadBalancer IP", "service", svcKey, "ip", ip)
+	r.Recorder.Event(service, corev1.EventTypeNormal, "StatusUpdated", "Service status updated with LoadBalancer IP")
 
 	return nil
 }
