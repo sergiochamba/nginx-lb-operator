@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/ioutil"
@@ -47,6 +48,7 @@ func CopyFileToNGINXServer(ctx context.Context, c client.Client, content, remote
 }
 
 // RemoveFileFromNGINXServer removes a file directly from the NGINX server via SSH using sudo.
+// It checks if the file exists before attempting to remove it.
 func RemoveFileFromNGINXServer(ctx context.Context, c client.Client, remotePath string) error {
 	clientConfig, err := GetSSHClientConfig(ctx, c)
 	if err != nil {
@@ -65,9 +67,27 @@ func RemoveFileFromNGINXServer(ctx context.Context, c client.Client, remotePath 
 	}
 	defer session.Close()
 
-	// Command to remove the file using sudo
-	command := fmt.Sprintf("sudo rm %s", remotePath)
+	// Check if the file exists
+	var output bytes.Buffer
+	session.Stdout = &output
+	checkFileCmd := fmt.Sprintf("[ -f %s ] && echo 'exists' || echo 'not_found'", remotePath)
+	if err := session.Run(checkFileCmd); err != nil {
+		return fmt.Errorf("failed to check file existence at %s: %w", remotePath, err)
+	}
 
+	if strings.TrimSpace(output.String()) == "not_found" {
+		// If the file does not exist, return without an error (successful removal)
+		return nil
+	}
+
+	// Now try to remove the file since it exists
+	session, err = client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create SSH session: %w", err)
+	}
+	defer session.Close()
+
+	command := fmt.Sprintf("sudo rm %s", remotePath)
 	if err := session.Run(command); err != nil {
 		return fmt.Errorf("failed to remove file '%s': %w", remotePath, err)
 	}
@@ -168,4 +188,56 @@ func GetSSHClientConfig(ctx context.Context, c client.Client) (*SSHClientConfig,
 type SSHClientConfig struct {
 	Host   string
 	Config *ssh.ClientConfig
+}
+
+// FetchFileFromNGINXServer retrieves the content of a file from the NGINX server via SSH.
+// If the file does not exist, it returns an empty string, signaling no VRIDs have been allocated.
+func FetchFileFromNGINXServer(ctx context.Context, c client.Client, remotePath string) (string, error) {
+	clientConfig, err := GetSSHClientConfig(ctx, c)
+	if err != nil {
+		return "", err
+	}
+
+	// Establish SSH connection
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:22", clientConfig.Host), clientConfig.Config)
+	if err != nil {
+		return "", fmt.Errorf("failed to establish SSH connection: %w", err)
+	}
+	defer client.Close()
+
+	// Create a new SSH session for file existence check
+	session, err := client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("failed to create SSH session: %w", err)
+	}
+	defer session.Close()
+
+	// Check if the file exists
+	var output bytes.Buffer
+	session.Stdout = &output
+	checkFileCmd := fmt.Sprintf("[ -f %s ] && echo 'exists' || echo 'not_found'", remotePath)
+	if err := session.Run(checkFileCmd); err != nil {
+		return "", fmt.Errorf("failed to check file existence at %s: %w", remotePath, err)
+	}
+
+	if strings.TrimSpace(output.String()) == "not_found" {
+		// File does not exist, return empty string to indicate no VRIDs are allocated
+		return "", nil
+	}
+
+	// File exists, fetch its content
+	session, err = client.NewSession() // Create a new session for fetching content
+	if err != nil {
+		return "", fmt.Errorf("failed to create SSH session: %w", err)
+	}
+	defer session.Close()
+
+	output.Reset()
+	session.Stdout = &output
+	command := fmt.Sprintf("sudo cat %s", remotePath)
+	if err := session.Run(command); err != nil {
+		return "", fmt.Errorf("failed to fetch file from %s: %w", remotePath, err)
+	}
+
+	return output.String(), nil
 }

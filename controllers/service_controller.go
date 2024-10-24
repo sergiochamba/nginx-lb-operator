@@ -5,8 +5,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1" // Corrected import
+	"k8s.io/apimachinery/pkg/api/errors" // Corrected import
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,6 +29,7 @@ type ServiceReconciler struct {
 // SetupWithManager sets up the controller with the Manager.
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
+	// Setting up the controller
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Service{}).
 		Watches(
@@ -65,7 +65,7 @@ func (r *ServiceReconciler) isLoadBalancerService(endpoints client.Object) bool 
 	// Fetch the associated Service object
 	svc := &corev1.Service{}
 	if err := r.Client.Get(ctx, client.ObjectKey{Name: serviceName, Namespace: namespace}, svc); err != nil {
-		ctrl.Log.Error(err, "unable to fetch associated Service for Endpoints", "endpoints", serviceName)
+		ctrl.Log.Info("unable to fetch associated Service for Endpoints - Service could have been deleted", "endpoints", serviceName)
 		return false
 	}
 
@@ -169,7 +169,7 @@ func (r *ServiceReconciler) reconcileService(ctx context.Context, service *corev
 		}
 	}
 
-	// Get or Allocate VRIDs
+	// Fetch the already allocated VRIDs (done at startup)
 	vrid1, vrid2, err := utils.GetOrAllocateVRIDs(ctx, r.Client)
 	if err != nil {
 		log.Error(err, "Failed to retrieve VRIDs")
@@ -177,7 +177,7 @@ func (r *ServiceReconciler) reconcileService(ctx context.Context, service *corev
 		return err
 	}
 
-	// Configure Keepalived first
+	// Configure Keepalived
 	if err := utils.ConfigureKeepalived(ctx, r.Client, vrid1, vrid2); err != nil {
 		log.Error(err, "Failed to configure Keepalived", "service", svcKey)
 		r.Recorder.Event(service, corev1.EventTypeWarning, "KeepalivedError", "Failed to configure Keepalived")
@@ -190,7 +190,7 @@ func (r *ServiceReconciler) reconcileService(ctx context.Context, service *corev
 	r.Recorder.Event(service, corev1.EventTypeNormal, "Waiting", "Waiting for Keepalived to apply VIPs")
 	time.Sleep(3 * time.Second)
 
-	// Now configure NGINX
+	// Configure NGINX
 	if err := utils.ConfigureNGINX(ctx, r.Client, service, ip); err != nil {
 		log.Error(err, "Failed to configure NGINX for service", "service", svcKey)
 		r.Recorder.Event(service, corev1.EventTypeWarning, "NGINXConfigError", "Failed to configure NGINX")
@@ -198,6 +198,12 @@ func (r *ServiceReconciler) reconcileService(ctx context.Context, service *corev
 	}
 	log.Info("Configured NGINX for service", "service", svcKey)
 	r.Recorder.Event(service, corev1.EventTypeNormal, "NGINXConfigured", "NGINX configured successfully")
+
+	// Refetch the latest version of the service before updating the status
+	if err := r.Get(ctx, svcKey, service); err != nil {
+		log.Error(err, "Failed to refetch service before status update", "service", svcKey)
+		return err
+	}
 
 	// Update the Service status with the allocated LoadBalancer IP
 	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{
@@ -265,18 +271,18 @@ func (r *ServiceReconciler) handleDeletedService(ctx context.Context, namespaced
 	log.Info("Service not found; it might have been deleted", "service", namespacedName)
 
 	// Create a dummy service object to pass to the cleanup functions
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      namespacedName.Name,
-			Namespace: namespacedName.Namespace,
-		},
-	}
+	//service := &corev1.Service{
+	//	ObjectMeta: metav1.ObjectMeta{
+	//		Name:      namespacedName.Name,
+	//		Namespace: namespacedName.Namespace,
+	//	},
+	//}
 
 	// Perform finalization
-	if err := r.finalizeService(ctx, service); err != nil {
-		log.Error(err, "Failed to finalize deleted service", "service", namespacedName)
-		return ctrl.Result{}, err
-	}
+	//if err := r.finalizeService(ctx, service); err != nil {
+	//	log.Error(err, "Failed to finalize deleted service", "service", namespacedName)
+	//	return ctrl.Result{}, err
+	//}
 
 	return ctrl.Result{}, nil
 }

@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
+	"sync"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	"github.com/sergiochamba/nginx-lb-operator/controllers"
+	"github.com/sergiochamba/nginx-lb-operator/utils"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -71,9 +74,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	// Wait group to prevent exit until everything finishes
+	var wg sync.WaitGroup
+	wg.Add(1) // Add 1 for the cache sync and VRID allocation
+
+	// Start the manager in a goroutine
+	go func() {
+		setupLog.Info("Starting manager...")
+		if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+			setupLog.Error(err, "problem running manager")
+			os.Exit(1)
+		}
+		wg.Done() // Mark as done when manager starts successfully
+	}()
+
+	// Wait for the cache to synchronize before starting other operations
+	setupLog.Info("Waiting for cache sync...")
+	if !mgr.GetCache().WaitForCacheSync(context.Background()) {
+		setupLog.Error(err, "Cache sync failed")
 		os.Exit(1)
 	}
+	setupLog.Info("Cache sync successful")
+
+	// Allocate VRIDs after cache sync is complete
+	if err := utils.GetOrAllocateVRIDsOnStartup(context.Background(), mgr.GetClient()); err != nil {
+		setupLog.Error(err, "Failed to allocate VRIDs at operator startup")
+		os.Exit(1)
+	}
+
+	setupLog.Info("Manager cache synced and VRID allocation complete. Starting manager...")
+
+	// Wait for goroutine to finish
+	wg.Wait()
 }
