@@ -27,6 +27,7 @@ type ServiceReconciler struct {
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Service{}).
+		Owns(&corev1.Endpoints{}). // Watch the Endpoints resource
 		Complete(r)
 }
 
